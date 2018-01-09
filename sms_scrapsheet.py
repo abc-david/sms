@@ -4,7 +4,7 @@ import json
 import pprint
 
 # campagne Alexandra 5-jan-18
-""" xxx """
+""" xxx
 folder = "/home/david/comptage_sms/alexandra/amplitude_05-01-18"
 campagne = "Alexandra_Amplitude_05-01-18"
 message = u"Ce weekend, pendant les portes ouvertes, la gamme SUV est à partir de 149€ / mois chez Opel. Cliquez pour prendre RDV http://bit.ly/jevaist’envoyerlelienquandilseradispo"
@@ -16,10 +16,10 @@ cp_list = ['10000', '52000', '89000', '89100', '77240', '77170', '77210', '77130
 s = SMSQuery(client = 'Alexandra')
 s.where(cp_list = cp_list, cp_precision = 3, age_min = 30, age_max = 65)
 s.select_sample(limit = int(800 / 0.14))
-
+"""
 
 # campagne Yakare 5-jan-18
-""" xxx
+""" xxx """
 folder = "/home/david/comptage_sms/yakare/renault_5regions_05-01-18"
 campagne = "Yakare_Renault_5-regions_05-01-18"
 message = u"Renault Gueudet révèle ses PEPITES: voitures de -10km, disponibles, à prix d’or! Attention stock limité, jusqu’au 31/01/18. http://bit.ly/pepiteS"
@@ -30,14 +30,14 @@ camp_id = "5a4f5bb7ab234161a12c1484"
 bat_david = ['+33680835196']
 bat_yakare = ['+33638660499', '+33622138212']
 
-#pt = PrimoTextoAPI()
-#pt.create_list(campagne)
-#pt.upload_contact('+33680835196', '5a37da867076b97ff6320662')
-#pt.upload_list(['+33638660499', '+33622138212'])
-#pt.create_campaign(campagne, message, exp, "05-01-18 14:00:00")
-#pt.send_bat(bat_yakare, campaign_id = camp_id)
-#pt.send(campaign_id = "5a380f397076b97ff6320db3")
-#pt.status(campaign_id = "5a380f397076b97ff6320db3")
+pt = PrimoTextoAPI()
+pt.create_list(campagne)
+pt.upload_contact('+33680835196', '5a37da867076b97ff6320662')
+pt.upload_list(['+33638660499', '+33622138212'])
+pt.create_campaign(campagne, message, exp, "05-01-18 14:00:00")
+pt.send_bat(bat_yakare, campaign_id = camp_id)
+pt.send(campaign_id = "5a380f397076b97ff6320db3")
+pt.status(campaign_id = "5a380f397076b97ff6320db3")
 
 for region in ['idf', "picardie", 'haute-normandie', 'nord', 'rhone-alpes']:
     s = SMSQuery(client = "yakare")
@@ -45,7 +45,7 @@ for region in ['idf', "picardie", 'haute-normandie', 'nord', 'rhone-alpes']:
     s.select_sample(limit = 2500)
     s.hlr_cleanup("Yakare_05-01-18_" + str(region), True, folder, str(region) + "_hlr.csv", False)
     s.upload_to_router(list_id = list_id)
-"""
+
 
 # comptage Alexandra IDF
 """ xxx

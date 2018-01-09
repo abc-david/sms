@@ -1813,3 +1813,15 @@ class Formatter(object):
         ]
         return 'OrderedDict([%s])' % (','.join(items) +
                self.lfchar + self.htchar * indent)
+
+class SignNow(object):
+    key = {'client_id': '0fccdbc73581ca0f9bf8c379e6a96813',
+           'secret': '3719a124bcfc03c534d4f5c05b5a196b',
+            'ENCODED_CLIENT_CREDENTIALS': 'MGZjY2RiYzczNTgxY2EwZjliZjhjMzc5ZTZhOTY4MTM6MzcxOWExMjRiY2ZjMDNjNTM0ZDRmNWMwNWI1YTE5NmI='}
+
+class Intuit(object):
+    key = {'client_id' : 'Q0r92u7K7Ju7pTgwYeLVTw37Dce3xW5kMsCUP7RZdvkqQSckKG',
+           'secret' : 'wD4dmmt1eXIDGPIxeSThOqYnN90evWD2nl4XErQj',
+           'redirect_uri' : 'https://developer.intuit.com/v2/OAuth2Playground/RedirectUrl'}
+
+api_key = 'AIzaSyA2AWv2WRxuBmowrMwWgS24c-aC_BgrapM'
