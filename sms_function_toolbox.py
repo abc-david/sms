@@ -14,6 +14,39 @@ from threading import Thread
 import dateutil.parser as dparser
 from dateutil.relativedelta import relativedelta
 
+def convert_args_to_list(arg, arg_type = None):
+    arg_list = []
+    if not isinstance(arg, list):
+        arg_list.append(convert_arg(arg, arg_type))
+    else:
+        for item in arg:
+            arg_list.append(convert_arg(item, arg_type))
+    return arg_list
+
+def convert_arg(arg, arg_type = None):
+    #return arg
+    if not isinstance(arg, basestring):
+        if isinstance(arg, int):
+            if arg_type == 'cp':
+                arg = str(arg)
+                if len(arg) == 5:
+                    return arg
+                elif len(arg) == 4:
+                    return '0' + arg
+                elif len(arg) <= 3:
+                    return arg + ('0' * (5 - len(arg)))
+                elif len(arg) > 5:
+                    return arg[:5]
+            else:
+                arg = str(arg)
+                return arg
+        else:
+            arg = str(arg)
+            return arg
+    else:
+        return arg
+
+
 def create_cp_fix_df(cp_dict, cp_param_list):
     print cp_dict
     data = []

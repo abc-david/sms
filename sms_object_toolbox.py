@@ -1,3 +1,4 @@
+# -*- coding: UTF-8 -*-
 import os, sys
 import datetime as d
 import numpy as np
@@ -694,11 +695,17 @@ class SMSQuery(object):
         self.where_clause = None
         self.groupby_clause = None
         self.limit_clause = None
+        self.geo_criteria = None
+        self.geo_list = None
         self.cp_list = None
         self.cp_sql_list = None
         self.city_list = None
+        self.city_cp_strict = None
         self.city_cp_list = None
         self.city_cp_df = None
+        self.region_list = None
+        self.region_cp_list = None
+        self.region_cp_df = None
         self.cp_fix = False
         self.cp_fix_df = None
         self.geo_fix = False
@@ -728,17 +735,18 @@ class SMSQuery(object):
         self.debug = debug
         self.query = None
 
-    def where(self, city_list = None, region_list = None, cp_list = None, sql_city_list = None, cp_precision = 5,
-              age_min = None, age_max = None, civi = None, sms_list = None, city_cp_strict = False):
-        if cp_list: self.cp_list = cp_list
-        if city_list: self.city_list = city_list
-        if region_list: self.region_list = region_list
+    def where(self, geo_criteria = None, geo_list = None, sql_city_list = None, cp_precision = 5,
+              age_min = None, age_max = None, civi = None, sms_list = None, city_cp_strict = True):
+        if geo_criteria: self.geo_criteria = geo_criteria
+        if geo_list: self.geo_list = geo_list
         if sql_city_list: self.sql_city_list = sql_city_list
         if cp_precision: self.cp_precision = cp_precision
         if age_min: self.age_min = age_min
         if age_max: self.age_max = age_max
         if civi: self.civi = civi
         if sms_list: self.sms_list = sms_list
+        self.city_cp_strict = city_cp_strict
+        self.eval_geo()
         self.where_clause = ""
         where_list = []
         if self.age_min:
@@ -903,6 +911,16 @@ class SMSQuery(object):
         else:
             self.where_clause = ""
 
+    def eval_geo(self):
+        if self.geo_criteria in ['cp', 'zip', 'zip_code'] or self.geo_criteria == None:
+            self.cp_list = convert_args_to_list(self.geo_list, 'cp')
+        elif self.geo_criteria in ['ville', 'city']:
+            self.city_list = convert_args_to_list(self.geo_list)
+        elif self.geo_criteria in ['dpt', 'departement']:
+            self.dpt_list = convert_args_to_list(self.geo_list)
+        elif self.geo_criteria in ['region']:
+            self.region_list = convert_args_to_list(self.geo_list)
+
     def select(self, select_field = None, limit = None, hlr_factor = 1.25, error_factor = 1.1):
         if select_field: self.select_field = select_field
         if limit:
@@ -947,9 +965,19 @@ class SMSQuery(object):
         return self.df
         
     def select_sample(self, select_field = None, limit = None, hlr_factor = 1.25, error_factor = 1.1):
-        self.select(select_field)
         if limit:
             limit = enlarge_sample(limit, hlr_factor = hlr_factor, error_factor = error_factor, debug = self.debug)
+            self.select(select_field)
+            if len(self.df.index) < limit:
+                self.cp_precision = self.cp_precision - 1
+                self.where(self.geo_criteria, self.geo_list, self.sql_city_list, self.cp_precision,
+                            self.age_min, self.age_max, self.civi, self.sms_list, self.city_cp_strict)
+                self.get_df()
+                while len(self.df.index) < limit and self.cp_precision >= 2:
+                    self.cp_precision = self.cp_precision - 1
+                    self.where(self.geo_criteria, self.geo_list, self.sql_city_list, self.cp_precision,
+                                self.age_min, self.age_max, self.civi, self.sms_list, self.city_cp_strict)
+                    self.get_df()
             self.df = sample_or_same(self.df, limit)
         return self.df
 
@@ -1091,7 +1119,7 @@ class SMSQuery(object):
         else:
             return False
 
-    def create_city_cp_df(self, id_table = 'postal_ville_cp', strict = False):
+    def create_city_cp_df(self, id_table = 'postal_ville_cp', strict = True):
         usual_city_dict = {'Paris' : ['Paris ' + digit_to_str(arrdt) for arrdt in range(1,21)],
                        'Neuilly' : 'Neuilly sur Seine',
                        'Boulogne' : 'Boulogne Billancourt',
@@ -1133,7 +1161,7 @@ class SMSQuery(object):
     
     def create_cp_fix_df(self):
         # when cp_precision in [3, 4], creates a df to mask existing cp with queried cp
-        print self.cp_sql_dict
+        #print self.cp_sql_dict
         data = []
         two_digit = lambda x: '0' + str(x) if len(str(x)) == 1 else str(x)
         for n_cp, cp_list in self.cp_sql_dict.iteritems():
@@ -1164,6 +1192,8 @@ class SMSQuery(object):
                 self.geo_fix = True
                 self.geo_fix_df = pd.merge(self.cp_fix_df,
                                           self.city_cp_df.rename(columns = {'cp' : 'cp_show'}))
+            elif self.region_list:
+                pass
             else:
                 self.geo_fix = True
                 self.geo_fix_df = self.cp_fix_df.copy(deep = True)
@@ -1182,6 +1212,8 @@ class SMSQuery(object):
                 else:
                     # in this case cp_precision = 5, so no need for extra modifications
                     pass
+            elif self.region_list:
+                pass
             else:
                 # no need to mask anything in this case
                 pass
@@ -1662,6 +1694,19 @@ class SMSRouterStats(object):
         if debug:
             print "   --> stats_df from %s records, to %s records" % (str(old_len), str(new_len))
 
+    def add_ville(self, df, ville_list = ['Paris', 'Lyon', 'Marseille', 'Nice', 'Lille', 'Toulouse', 'Bordeaux']):
+        ville_df = pd.DataFrame(data = [[x, ville_list[x]] for x in range(len(ville_list))],
+                                columns=['ville_num', 'ville'])
+        show_df(ville_df)
+        df['ville_num'] = np.random.randint(0, len(ville_list), size=len(df))
+        show_df(df)
+        df = pd.merge(df, ville_df, on='ville_num')
+        show_df(df)
+        df.drop('ville_num', axis = 1, inplace = True)
+        show_df(df)
+        return df
+
+
 class PrimoTextoAPI(object):
     headers = {'content-type': "application/json",
                'X-Primotexto-ApiKey': 'a3a5d60a2900fa425f4edb2d03ea157d'}
@@ -1726,10 +1771,13 @@ class PrimoTextoAPI(object):
 	            "sendList": {"id": self.list_id},
                 "sourceAddress" : sender}
         if send_date:
-            parsed_date = dparser.parse(send_date, fuzzy = True, dayfirst = True)
-            date_in_s = parsed_date.strftime('%s')
-            date_in_ms = int(date_in_s) * 1000
-            data['date'] = date_in_ms
+            try:
+                parsed_date = dparser.parse(send_date, fuzzy = True, dayfirst = True)
+                date_in_s = parsed_date.strftime('%s')
+                date_in_ms = int(date_in_s) * 1000
+                data['date'] = date_in_ms
+            except:
+                print "** Warning !! No send_date **"
         if url:
             data["externalUrl"] = url
             data["landingPageType"] = "EXTERNAL"
@@ -1825,3 +1873,110 @@ class Intuit(object):
            'redirect_uri' : 'https://developer.intuit.com/v2/OAuth2Playground/RedirectUrl'}
 
 api_key = 'AIzaSyA2AWv2WRxuBmowrMwWgS24c-aC_BgrapM'
+
+class EvalParams(object):
+    param_dict = {'query' : {'geo_criteria':'cp', 'geo_list':None, 'cp_precision':5, 'age_min':None, 'age_max':None, 'civi':None},
+                  'campaign' : {'sender':None, 'message':None, 'bat_list':['0680835196']}}
+    boolean_param_dict = {'query' : {'group_by' : False},
+                          'query_v2' : {'20km' : False, 'group_by' : False},
+                          'campaign':{}}
+    def __init__(self, request_json, case):
+        self.json = dict(request_json)
+        self.valid = True
+        self.error_dict = {}
+        self.request_params = request_json.keys()
+        self.function_params = self.param_dict[case]
+        self.param_dict = {}
+        self.function_boolean_params = self.boolean_param_dict[case]
+        self.boolean_param_dict = {}
+        for param in self.function_params.keys():
+            if param in self.request_params:
+                self.param_dict[param] = self.json[param]
+            else:
+                self.param_dict[param] = self.function_params[param]
+        for param in self.function_boolean_params.keys():
+            if param in self.request_params:
+                if isinstance(self.json[param], bool):
+                    self.boolean_param_dict[param] = self.json[param]
+                elif isinstance(self.json[param], basestring):
+                    if self.json[param].upper() == str('True').upper():
+                        self.boolean_param_dict[param] = True
+                    elif self.json[param].upper() == str('False').upper():
+                        self.boolean_param_dict[param] = False
+                    else:
+                        self.boolean_param_dict[param] = self.function_boolean_params[param]
+                else:
+                    try:
+                        self.json[param] = str(self.json[param])
+                        if self.json[param].upper() == str('True').upper():
+                            self.boolean_param_dict[param] = True
+                        elif self.json[param].upper() == str('False').upper():
+                            self.boolean_param_dict[param] = False
+                        else:
+                            self.boolean_param_dict[param] = self.function_boolean_params[param]
+                    except:
+                        self.boolean_param_dict[param] = self.function_boolean_params[param]
+            else:
+                self.boolean_param_dict[param] = self.function_boolean_params[param]
+    
+    def check_query(self):
+        for param in ['geo_criteria', 'geo_list']:
+            if not self.param_dict[param]:
+                self.valid = False
+                self.error_dict[param] = "No value passed for '%s'" % str(param)
+        if self.valid:
+            ok_values = {'geo_criteria':['cp', 'zip', 'city', 'ville', 'dpt', 'region']}
+            if not self.param_dict['geo_criteria'] in ok_values['geo_criteria']:
+                self.valid = False
+                self.error_dict['geo_criteria'] = "'geo_criteria' parameter must be one of %s" % str(ok_values['geo_criteria'])
+    
+    
+    def check_campaign(self):
+        for param in self.function_params.keys():
+            if not self.param_dict[param]:
+                self.valid = False
+                self.error_dict[param] = "No value passed for '%s'" % str(param)
+            if param in ['sender', 'message']:
+                try:
+                    self.param_dict[param] = str(self.param_dict[param]).encode('utf-8')
+                except:
+                    self.valid = False
+                    self.error_dict[param] = "'%s' value failed be properly encoded in 'utf-8'" % str(param)
+        if self.valid:
+            if len(self.param_dict['sender']) > 11:
+                self.valid = False
+                self.error_dict['sender'] = "'sender' value ('%s') cannot exceed 11 characters -- current length is %s characters" \
+                                            % (str(self.param_dict['sender']), str(len(self.param_dict['sender'])))
+            if len(self.param_dict['message']) > 149:
+                self.valid = False
+                self.error_dict['message'] = "'message' value ('%s') cannot exceed 149 characters -- current length is %s characters" \
+                                            % (str(self.param_dict['message']), str(len(self.param_dict['message'])))
+            if not isinstance(self.param_dict['bat_list'], list):
+                self.param_dict['bat_list'] = [self.param_dict['bat_list']]
+            clean_bat_list = []
+            for bat in self.param_dict['bat_list']:
+                bat = str(bat)
+                if len(bat) == 12:
+                    if bat[:3] != '+33':
+                        self.error_dict['bat_list'] = "sms number '%s' removed as it did not begin with '+33'" % str(bat)
+                    else:
+                        clean_bat_list.append(bat)
+                elif len(bat) == 10:
+                    if not bat[:2] in ['06', '07']:
+                        self.error_dict['bat_list'] = "sms number '%s' removed as it did not begin with '06' or '07'" % str(bat)
+                    else:
+                        clean_bat_list.append('+33' + bat[1:])
+                elif len(bat) == 9:
+                    if not bat[0] in ['6', '7']:
+                        self.error_dict['bat_list'] = "sms number '%s' removed as it did not begin with '6' or '7'" % str(bat)
+                    else:
+                        clean_bat_list.append('+33' + bat)
+                else:
+                    self.error_dict['bat_list'] = "sms number '%s' removed as it is not a valid format" % str(bat)
+            if len(clean_bat_list) > 0:
+                self.param_dict['bat_list'] = [bat for bat in clean_bat_list]
+                #print self.param_dict['bat_list']
+            else:
+                self.valid = False
+                self.error_dict['bat_list'] = "no single valid sms number found after cleaning process"
+

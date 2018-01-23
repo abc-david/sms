@@ -3,9 +3,104 @@ from sms_object_toolbox import *
 import json
 import pprint
 
+folder = "/home/david/sms/pauline/jennifer_10-01-18"
+file = "stats_pauline_jennifer_10-01-18.csv"
+
+s = SMSRouterStats(folder = folder, file = file, debug = False, field_list = ['sms', 'cp'],
+                    write_to_csv = True, csv_folder = folder, csv_file = "pauline_" + file)
+s.remove_weird_status()
+#s.adjust_sent_number_groupby(7142)
+#s.adjust_sent_number_groupby(7142)
+s.adjust_sent_number(s.stats_df, 9523)
+#s.adjust_status_distribution_groupby()
+#s.get_default_ref_df(debug = False)
+#s.append_ref_df()
+#s.adjust_age()
+#s.add_age_range()
+
+s.stats_df = s.add_ville(s.stats_df)
+s.get_stats_groupby('ville', debug = False)
+#s.get_stats_groupby('age_range', debug = False)
+#s.get_stats_groupby('gender', debug = False)
+#s.get_stats_alexandra()
+
+# campagne Yakare 15-jan-18
+""" xxx 
+folder = "/home/david/sms/yakare/renault_beziers"
+send_date = "01/17/2018 18:00:00"
+bat_list = ['0638660499','0671251102','0603018181','0680835196']
+sender = "RENAULT"
+age_min = 30
+age_max = 65
+camp_name_root = "Yakare_Renault_19-jan-2018_"
+camp_dict = {
+    'Beziers-1':{'msg':u'Renault Béziers double la nouvelle prime gouvernementale de conversion-Portes Ouvertes du 18 au 22/01. Ouvert Dimanche voir cond. contact 0467627000',
+                 'bat':['0638660499','0671251102'],
+                 'limit':5000,
+                 'list':['0678356889', '0603111422','0608302828', '0608529903'],
+                 'cp':'34500'},
+    'Beziers-2':{'msg':u"Renault Béziers - Venez profiter de la nouvelle prime gouvernementale de conversion sur nos véhicules d'occasion voir cond. Contactez Enzo 0608529903",
+                 'bat':['0638660499','0671251102'],
+                 'limit':2500,
+                 'list':['0678356889', '0603111422','0608302828', '0608529903'],
+                 'cp':'34500'},
+    'Narbonne':{'msg':u'Renault Narbonne double la nouvelle prime gouvernementale de conversion-Portes Ouvertes du 18 au 22/01. Ouvert Dimanche voir cond. contact 0468425000',
+                 'bat':['0638660499','0671251102'],
+                 'limit':4000,
+                'list':['06783568889', '0614174855', '0603111422'],
+                'cp' : '11100'},
+    'Lezignan':{'old_msg':u'Renault Lézignan double la nouvelle prime gouvernementale de conversion-Portes Ouvertes du 18 au 22/01. Ouvert Dimanche voir cond. contact 0468247400',
+                 'msg':u'Renault Lézignan double la nouvelle prime gouvernementale de conversion-Portes Ouvertes du 18 au 22/01. Ouvert Dimanche voir cond. contact 0468277400',
+                 'bat':['0638660499','0671251102'],
+                 'limit':1000,
+                'list':['0678356889', '0614174855','0789761624', '0603111422'],
+                'cp':'11200'},
+    'Revel':{'old_msg':u'Renault Revel double la nouvelle prime gouvernementale de conversion. Portes Ouvertes du 18 au 22/01, voir conditions contact 0562713090',
+              'msg':u'Renault Revel double la nouvelle prime gouvernementale de conversion. Portes Ouvertes du 18 au 22/01, voir conditions contact 0562713090',
+                 'bat':['0638660499','0671251102'],
+                 'limit':3000,
+             'list':['0632106179', '0648004648','0603111422'],
+             'cp':'31250'},
+    'Castres':{'old_msg':u'Renault Castres double la nouvelle prime gouvernementale de conversion. Portes Ouvertes du 18 au 22/01. Ouvert Dimanche voir cond. contact 0563716666',
+               'msg':u'Renault Castres double la nouvelle prime gouvernementale de conversion. Portes Ouvertes du 18 au 22/01, voir conditions contact 0563716666',
+                 'bat':['0638660499','0671251102'],
+                 'limit':5000,
+               'list':['0632106179', '0627822365','0603111422'],
+               'cp':'02680'},
+    'Mazamet':{'old_msg':u'Renault Mazamet double la nouvelle prime gouvernementale de conversion. Portes Ouvertes du 18 au 22/01. Ouvert Dimanche voir cond. contact 0563975230',
+               'msg':u'Renault Mazamet double la nouvelle prime gouvernementale de conversion. Portes Ouvertes du 18 au 22/01, voir conditions contact 0563975830',
+                 'bat':['0638660499'],
+                 'limit':1000,
+               'list':['0632106179', '0664188681','0603111422'],
+               'cp':'81200'}
+}
+
+for city, cc_dict in camp_dict.iteritems():
+    if city in ['Castres','Mazamet','Lezignan','Revel']:
+        camp_name = camp_name_root + city
+        pt = PrimoTextoAPI()
+        list_id = pt.create_list(camp_name)
+        pt.upload_list(cc_dict['list'])
+        #s = SMSQuery()
+        #s.where(geo_criteria = 'cp', geo_list = cc_dict['cp'])
+        #s.select_sample(limit = cc_dict['limit'])
+        #s.hlr_cleanup(camp_name, True, folder, camp_name + "_hlr.csv", False)
+        #s.upload_to_router(list_id = list_id)
+        pt.create_campaign(camp_name, cc_dict['msg'], sender, send_date)
+        pt.send_bat(['0603018181'])
+"""
+
+""" xxx 
+city_list = ['Beziers','Narbonne','Revel','Castres','Lezignan-Corbieres','Mazamet']
+cp_list = [27000,75000]
+s = SMSQuery(client = 'Yakare')
+s.where(geo_criteria='city', geo_list=city_list, age_min=30, age_max=65, cp_precision=5)
+s.count_sms(True)
+"""
+
 # campagne Alexandra 5-jan-18
-""" xxx
-folder = "/home/david/comptage_sms/alexandra/amplitude_05-01-18"
+""" xxx 
+folder = "/home/david/sms/alexandra/amplitude_05-01-18"
 campagne = "Alexandra_Amplitude_05-01-18"
 message = u"Ce weekend, pendant les portes ouvertes, la gamme SUV est à partir de 149€ / mois chez Opel. Cliquez pour prendre RDV http://bit.ly/jevaist’envoyerlelienquandilseradispo"
 message = message.encode("utf-8")
@@ -13,13 +108,19 @@ exp = "OPEL AMPLITUDE"
 bat_david = ['+33680835196']
 bat_alexandra = ['+33679312656']
 cp_list = ['10000', '52000', '89000', '89100', '77240', '77170', '77210', '77130']
+pt = PrimoTextoAPI()
+list_id = pt.create_list(campagne)
 s = SMSQuery(client = 'Alexandra')
-s.where(cp_list = cp_list, cp_precision = 3, age_min = 30, age_max = 65)
+s.where(geo_criteria = 'cp', geo_list = cp_list, cp_precision = 3, age_min = 30, age_max = 65)
 s.select_sample(limit = int(800 / 0.14))
+s.hlr_cleanup(campagne, True, folder, campagne + "_hlr.csv", False)
+s.upload_to_router(list_id = list_id)
+#s.count_sms(True)
 """
 
+
 # campagne Yakare 5-jan-18
-""" xxx """
+""" xxx 
 folder = "/home/david/comptage_sms/yakare/renault_5regions_05-01-18"
 campagne = "Yakare_Renault_5-regions_05-01-18"
 message = u"Renault Gueudet révèle ses PEPITES: voitures de -10km, disponibles, à prix d’or! Attention stock limité, jusqu’au 31/01/18. http://bit.ly/pepiteS"
@@ -45,7 +146,7 @@ for region in ['idf', "picardie", 'haute-normandie', 'nord', 'rhone-alpes']:
     s.select_sample(limit = 2500)
     s.hlr_cleanup("Yakare_05-01-18_" + str(region), True, folder, str(region) + "_hlr.csv", False)
     s.upload_to_router(list_id = list_id)
-
+"""
 
 # comptage Alexandra IDF
 """ xxx
