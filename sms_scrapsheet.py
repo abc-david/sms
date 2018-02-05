@@ -3,6 +3,31 @@ from sms_object_toolbox import *
 import json
 import pprint
 
+# yakare comptage 25-01-18
+""" xxx """
+geo_dict = {'cp':['75001'],'ville':['bordeaux','nantes'],'dpt':['92'],'region':['ile-de-france']}
+geo_dict = {'cp':['75001']}
+geo_dict = {'ville':['Cenon','Floirac','Tresses','Lormont','Sainte-Eulalie','Bassens','Carbon-Blanc','Bordeaux Bastide','Bacalan','Artigues-près-Bordeaux','Yvrac','Bouliac','Bordeaux Lac']}
+#geo_dict = {'ville':['Sainte-Eulalie']}
+
+#geo_dict = {
+#    'cp':[49000,49130,49240,49124,49130,49610,49080,49070,49800,49460,49610,49480,49190]}
+age_min = None
+age_max = None
+
+s = SMSQuery(client='yakare')
+#s.where(geo_criteria='cp', geo_list=['77240','67100','49000','86440','26000'],
+#        age_min = 25, age_max = 65)
+#s.where(geo_criteria='cp', geo_list=['77','67','49','86','26'], age_min = 25, age_max = 65)
+#s.where(geo_criteria='cp', geo_list=['28', '27'], age_min = 30, age_max = 65)
+print str(geo_dict)
+print s.count_multi(geo_dict = geo_dict, age_min = age_min, age_max = age_max)
+
+
+
+
+# stats pauline jennifer 10-01-18
+""" xxx 
 folder = "/home/david/sms/pauline/jennifer_10-01-18"
 file = "stats_pauline_jennifer_10-01-18.csv"
 
@@ -24,6 +49,16 @@ s.get_stats_groupby('ville', debug = False)
 #s.get_stats_groupby('gender', debug = False)
 #s.get_stats_alexandra()
 
+
+city_list = {'narbonne':4000, 'revel':3000, 'beziers-1':2500, 'beziers-2':2500, 'mazamet':1000, 'castres':5000, 'lezignan':1000}
+folder = "/home/david/sms/yakare/renault_beziers/stats"
+for city, limit in city_list.iteritems():
+    print "******************  %s : %s  ************************" % (city, str(limit))
+    s = SMSRouterStats(folder, city+'.csv')
+    s.stats_df = s.adjust_sent_number(s.stats_df, limit)
+    s.stats_df = s.adjust_status_distribution(s.stats_df, amplitude = 0.1)
+    get_primary_stats(s.stats_df, True, True, folder, 'campagne_stats.csv', True)
+"""
 # campagne Yakare 15-jan-18
 """ xxx 
 folder = "/home/david/sms/yakare/renault_beziers"

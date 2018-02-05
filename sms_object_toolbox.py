@@ -19,6 +19,21 @@ from hlr_batch import *
 
 debug_query = True
 
+# Threading class
+class ThreadReturn(Thread):
+    def __init__(self, group=None, target=None, name=None,
+                 args=(), kwargs={}, Verbose=None):
+        Thread.__init__(self, group, target, name, args, kwargs, Verbose)
+        self._return = None
+
+    def run(self):
+        if self._Thread__target is not None:
+            self._return = self._Thread__target(*self._Thread__args,
+                                                **self._Thread__kwargs)
+    def join(self):
+        Thread.join(self)
+        return self._return
+
 class PgSQL(object):
     db_dict =  {'dbname' : "prod", #"postgres"
                 'user' : "postgres",
@@ -735,8 +750,8 @@ class SMSQuery(object):
         self.debug = debug
         self.query = None
 
-    def where(self, geo_criteria = None, geo_list = None, sql_city_list = None, cp_precision = 5,
-              age_min = None, age_max = None, civi = None, sms_list = None, city_cp_strict = True):
+    def where(self, geo_criteria = None, geo_list = None, age_min = None, age_max = None, civi = None, cp_precision = 5,
+              proxi = None, interest = None, sms_list = None, city_cp_strict = True, sql_city_list = None):
         if geo_criteria: self.geo_criteria = geo_criteria
         if geo_list: self.geo_list = geo_list
         if sql_city_list: self.sql_city_list = sql_city_list
@@ -811,6 +826,8 @@ class SMSQuery(object):
                     if self.debug: print "## Warning : city_list overrides cp_list. cp_list will not be taken in account. ##"
                 self.cp_list = []
                 self.cp_list.extend(self.city_cp_list)
+            else:
+                if self.debug: print "## Warning : could not match city name with zipcodes. ##"
 
         if self.region_list:
             if not self.connection: self.get_connection()
@@ -911,13 +928,48 @@ class SMSQuery(object):
         else:
             self.where_clause = ""
 
+    def count_multi(self, geo_dict = None, geo_criteria = None, geo_list = None, cp_precision = 5,
+                    age_min = None, age_max = None, civi = None, interest_list = None, proxi_list = None):
+        if geo_dict:
+            threads = []
+            for geo_criteria, geo_list in geo_dict.iteritems():
+                for geo_item in geo_list:
+                    t = ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item),
+                                    target = sms_query_count_single_geo_item,
+                                    args = (geo_criteria, geo_item, cp_precision, age_min, age_max, civi))
+                    threads.append(t)
+
+        else:
+            threads = [ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item),
+                                    target = sms_query_count_single_geo_item,
+                                    args = (geo_criteria, geo_item, cp_precision, age_min, age_max, civi))
+                       for geo_item in geo_list]
+        for t in threads:
+            t.start()
+        data = []
+        for t in threads:
+            t_res = t.join()
+            if t_res:
+                data.append(t_res)
+        result = pd.DataFrame(data = data, columns = ['entity', 'name', 'nb_sms'])
+        if interest_list:
+            if not isinstance(interest_list, list): interest_list = [interest_list]
+            for interest_id in interest_list:
+                result = adjust_for_interest(result, interest_id, amplitude = 0.05, col_to_adjust = 'nb_sms', base = 1.2)
+        if proxi_list:
+            if not isinstance(proxi_list, list): proxi_list = [proxi_list]
+            for proxi in proxi_list:
+                result = adjust_for_proxi(result, proxi = proxi, amplitude = 0.05, col_to_adjust = 'nb_sms', base = 1.2)
+        show_df(result)
+        return result
+
     def eval_geo(self):
         if self.geo_criteria in ['cp', 'zip', 'zip_code'] or self.geo_criteria == None:
             self.cp_list = convert_args_to_list(self.geo_list, 'cp')
         elif self.geo_criteria in ['ville', 'city']:
             self.city_list = convert_args_to_list(self.geo_list)
         elif self.geo_criteria in ['dpt', 'departement']:
-            self.dpt_list = convert_args_to_list(self.geo_list)
+            self.cp_list = convert_args_to_list(self.geo_list)
         elif self.geo_criteria in ['region']:
             self.region_list = convert_args_to_list(self.geo_list)
 
@@ -981,7 +1033,10 @@ class SMSQuery(object):
             self.df = sample_or_same(self.df, limit)
         return self.df
 
-    def count_sms(self, groupby_count = False, groupby_count_depth = 1, groupby_count_field = None):
+    def count_sms(self, groupby_count = False, groupby_count_depth = 1, groupby_count_field = None, check_cp_list = True):
+        if check_cp_list:
+            if not self.cp_list:
+                return False
         if groupby_count:
             self.groupby_count = groupby_count
         else:
@@ -1039,19 +1094,22 @@ class SMSQuery(object):
             self.groupby_clause = ""
         self.get_df()
 
-        if self.city_cp_list:
-            if len(self.df.ville.tolist()) > len(list(self.df.ville.unique())):
-                sum_df = self.df.groupby('ville').sum()
-                show_df(sum_df, len(sum_df.index))
-            return self.df[['ville', 'nb_sms']]
-        elif self.region_cp_list:
-            pass
-        else:
-            if 'cp' in list(self.df):
-                if len(self.df.cp.tolist()) > len(list(self.df.cp.unique())):
-                    sum_df = self.df.groupby('cp').sum()
+        if self.groupby_count:
+            if self.city_cp_list:
+                if len(self.df.ville.tolist()) > len(list(self.df.ville.unique())):
+                    sum_df = self.df.groupby('ville').sum()
                     show_df(sum_df, len(sum_df.index))
-            return self.df
+                return self.df[['ville', 'nb_sms']]
+            elif self.region_cp_list:
+                pass
+            else:
+                if 'cp' in list(self.df):
+                    if len(self.df.cp.tolist()) > len(list(self.df.cp.unique())):
+                        sum_df = self.df.groupby('cp').sum()
+                        show_df(sum_df, len(sum_df.index))
+                return self.df
+        else:
+            return self.df.iat[0,0]
 
     def count_groupby(self, fields, age_range = [25,35,45,55,65], upper_limit = 85):
         if 'age_range' in fields:
@@ -1155,6 +1213,7 @@ class SMSQuery(object):
                 print "%s cities --> %s records for %s distinct cp" % (str(len(self.city_list)),
                                                                        str(len(self.city_cp_df.index)), str(len(self.city_cp_list)))
                 #print cp_list
+                if len(self.city_cp_list) == 0: return False
             return (self.city_cp_list, self.city_cp_df)
         else:
             return False
@@ -1293,6 +1352,19 @@ class SMSQuery(object):
         h = HLR(self.df.sms.tolist())
         self.valid_df, self.valid_rate = h.batch(batch_name, write_to_file, folder, file, write_to_db, self.connection, debug)
 
+def sms_query_count_single_geo_item(geo_criteria = None, geo_item = None, cp_precision = 5,
+                                    age_min = None, age_max = None, civi = None):
+    s = SMSQuery()
+    s.where(geo_criteria = geo_criteria, geo_list = geo_item, age_min = age_min, age_max = age_max, civi = civi,
+            cp_precision = cp_precision, proxi = None, interest = None, sms_list = None, city_cp_strict = True, sql_city_list = None)
+    #s.where(geo_criteria, geo_item, None, cp_precision, age_min, age_max, civi, None, True)
+    res_count_sms = s.count_sms(False)
+    if res_count_sms:
+        res = [str(geo_criteria), str(geo_item), res_count_sms]
+        print res
+    else:
+        res = False
+    return res
 
 class SMSRouterStats(object):
     status_dict = {'Re?u' : "received", 'Re\xc3\xa7u' : 'received', 'Erreur (Temporaire)' : "temp_error",
@@ -1604,6 +1676,7 @@ class SMSRouterStats(object):
                 remove_index = random.sample(status_index, status_to_remove)
                 self.stats_df.status.iloc[remove_index] = 'received'
                 if debug: print "## modified %s records from '%s' status to 'received'" % (str(len(remove_index)), status)
+        return df
 
     def adjust_sent_number(self, df, target, amplitude = None, debug = True):
         if not amplitude:
@@ -1635,6 +1708,7 @@ class SMSRouterStats(object):
                 if debug: print "## removed %s records with '%s' status" % (str(len(remove_index)), 'received')
         if to_remove < 0:
             self.add_records(df, - to_remove, debug = debug)
+        return df
 
     def adjust_received_number(self, df, target, amplitude = None, debug = True):
         if not amplitude:
@@ -1873,110 +1947,4 @@ class Intuit(object):
            'redirect_uri' : 'https://developer.intuit.com/v2/OAuth2Playground/RedirectUrl'}
 
 api_key = 'AIzaSyA2AWv2WRxuBmowrMwWgS24c-aC_BgrapM'
-
-class EvalParams(object):
-    param_dict = {'query' : {'geo_criteria':'cp', 'geo_list':None, 'cp_precision':5, 'age_min':None, 'age_max':None, 'civi':None},
-                  'campaign' : {'sender':None, 'message':None, 'bat_list':['0680835196']}}
-    boolean_param_dict = {'query' : {'group_by' : False},
-                          'query_v2' : {'20km' : False, 'group_by' : False},
-                          'campaign':{}}
-    def __init__(self, request_json, case):
-        self.json = dict(request_json)
-        self.valid = True
-        self.error_dict = {}
-        self.request_params = request_json.keys()
-        self.function_params = self.param_dict[case]
-        self.param_dict = {}
-        self.function_boolean_params = self.boolean_param_dict[case]
-        self.boolean_param_dict = {}
-        for param in self.function_params.keys():
-            if param in self.request_params:
-                self.param_dict[param] = self.json[param]
-            else:
-                self.param_dict[param] = self.function_params[param]
-        for param in self.function_boolean_params.keys():
-            if param in self.request_params:
-                if isinstance(self.json[param], bool):
-                    self.boolean_param_dict[param] = self.json[param]
-                elif isinstance(self.json[param], basestring):
-                    if self.json[param].upper() == str('True').upper():
-                        self.boolean_param_dict[param] = True
-                    elif self.json[param].upper() == str('False').upper():
-                        self.boolean_param_dict[param] = False
-                    else:
-                        self.boolean_param_dict[param] = self.function_boolean_params[param]
-                else:
-                    try:
-                        self.json[param] = str(self.json[param])
-                        if self.json[param].upper() == str('True').upper():
-                            self.boolean_param_dict[param] = True
-                        elif self.json[param].upper() == str('False').upper():
-                            self.boolean_param_dict[param] = False
-                        else:
-                            self.boolean_param_dict[param] = self.function_boolean_params[param]
-                    except:
-                        self.boolean_param_dict[param] = self.function_boolean_params[param]
-            else:
-                self.boolean_param_dict[param] = self.function_boolean_params[param]
-    
-    def check_query(self):
-        for param in ['geo_criteria', 'geo_list']:
-            if not self.param_dict[param]:
-                self.valid = False
-                self.error_dict[param] = "No value passed for '%s'" % str(param)
-        if self.valid:
-            ok_values = {'geo_criteria':['cp', 'zip', 'city', 'ville', 'dpt', 'region']}
-            if not self.param_dict['geo_criteria'] in ok_values['geo_criteria']:
-                self.valid = False
-                self.error_dict['geo_criteria'] = "'geo_criteria' parameter must be one of %s" % str(ok_values['geo_criteria'])
-    
-    
-    def check_campaign(self):
-        for param in self.function_params.keys():
-            if not self.param_dict[param]:
-                self.valid = False
-                self.error_dict[param] = "No value passed for '%s'" % str(param)
-            if param in ['sender', 'message']:
-                try:
-                    self.param_dict[param] = str(self.param_dict[param]).encode('utf-8')
-                except:
-                    self.valid = False
-                    self.error_dict[param] = "'%s' value failed be properly encoded in 'utf-8'" % str(param)
-        if self.valid:
-            if len(self.param_dict['sender']) > 11:
-                self.valid = False
-                self.error_dict['sender'] = "'sender' value ('%s') cannot exceed 11 characters -- current length is %s characters" \
-                                            % (str(self.param_dict['sender']), str(len(self.param_dict['sender'])))
-            if len(self.param_dict['message']) > 149:
-                self.valid = False
-                self.error_dict['message'] = "'message' value ('%s') cannot exceed 149 characters -- current length is %s characters" \
-                                            % (str(self.param_dict['message']), str(len(self.param_dict['message'])))
-            if not isinstance(self.param_dict['bat_list'], list):
-                self.param_dict['bat_list'] = [self.param_dict['bat_list']]
-            clean_bat_list = []
-            for bat in self.param_dict['bat_list']:
-                bat = str(bat)
-                if len(bat) == 12:
-                    if bat[:3] != '+33':
-                        self.error_dict['bat_list'] = "sms number '%s' removed as it did not begin with '+33'" % str(bat)
-                    else:
-                        clean_bat_list.append(bat)
-                elif len(bat) == 10:
-                    if not bat[:2] in ['06', '07']:
-                        self.error_dict['bat_list'] = "sms number '%s' removed as it did not begin with '06' or '07'" % str(bat)
-                    else:
-                        clean_bat_list.append('+33' + bat[1:])
-                elif len(bat) == 9:
-                    if not bat[0] in ['6', '7']:
-                        self.error_dict['bat_list'] = "sms number '%s' removed as it did not begin with '6' or '7'" % str(bat)
-                    else:
-                        clean_bat_list.append('+33' + bat)
-                else:
-                    self.error_dict['bat_list'] = "sms number '%s' removed as it is not a valid format" % str(bat)
-            if len(clean_bat_list) > 0:
-                self.param_dict['bat_list'] = [bat for bat in clean_bat_list]
-                #print self.param_dict['bat_list']
-            else:
-                self.valid = False
-                self.error_dict['bat_list'] = "no single valid sms number found after cleaning process"
 

@@ -13,6 +13,7 @@ import requests
 from threading import Thread
 import dateutil.parser as dparser
 from dateutil.relativedelta import relativedelta
+from sms_object_toolbox import *
 
 def convert_args_to_list(arg, arg_type = None):
     arg_list = []
@@ -45,7 +46,36 @@ def convert_arg(arg, arg_type = None):
             return arg
     else:
         return arg
+    
+def adjust_for_proxi(df, proxi = None, amplitude = 0.05, col_to_adjust = 'nb_sms', base = 1.2):
+    if proxi:
+        random_factor = 1
+        if amplitude != 0: random_factor = random.uniform((1 - amplitude), (1 + amplitude))
+        multi_factor = (base + (int(proxi) / 100)) * random_factor
+        print "Multiply by %s for +%skm" % (str(multi_factor), str(proxi))
+        try:
+            if col_to_adjust in list(df):
+                df["+%skm" % str(proxi)] = df[col_to_adjust].multiply(multi_factor).round(0).astype('int32')
+        except:
+            df = int(df * multi_factor)
+    return df
 
+def adjust_for_interest(df, interest_id, amplitude = 0.05, col_to_adjust = 'nb_sms', base = 1.2):
+    # interest_dict = {1:'csp+', 2:'auto', 3:'demenagement'}
+    interest_dict = {1:0.75, 2:0.85, 3:0.2}
+    if interest_id:
+        random_factor = 1
+        if amplitude != 0: random_factor = random.uniform((1 - amplitude), (1 + amplitude))
+        if interest_id in interest_dict.keys():
+            multi_factor = interest_dict[interest_id] * random_factor
+        else:
+            multi_factor = 0.8 * random_factor
+        try:
+            if col_to_adjust in list(df):
+                df[col_to_adjust] = df[col_to_adjust].multiply(multi_factor).round(0).astype('int32')
+        except:
+            df = int(df * multi_factor)
+    return df
 
 def create_cp_fix_df(cp_dict, cp_param_list):
     print cp_dict
@@ -868,7 +898,7 @@ def get_primary_stats(df, debug = False, write_to_file = False, folder = None, f
     #    stats[item + '_%'] = round(100 * int(stats[item]) / float(stats['total_sms']), 2)
     if stats['status_sum'] != stats['total_sms']:
         print "Warning ! the sum of status (%s) is not equal to the sum of the sms (%s)" % \
-              (str(stats['status_sum']), str(stats['total_sum']))
+              (str(stats['status_sum']), str(stats['total_sms']))
         if not debug: debug = True
     if debug:
         print "Statistiques de campagne (chiffres bruts et en pourcentage sur %s SMS envoyes)" % str(stats['total_sms'])
