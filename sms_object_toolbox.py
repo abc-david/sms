@@ -1,4 +1,5 @@
 # -*- coding: UTF-8 -*-
+from __future__ import division
 import os, sys
 import datetime as d
 import numpy as np
@@ -17,6 +18,7 @@ from dateutil.relativedelta import relativedelta
 from sms_function_toolbox import *
 from hlr_batch import *
 
+use_celery = False
 debug_query = True
 
 # Threading class
@@ -61,7 +63,7 @@ class PgSQL(object):
             for item in e:
                 message = str(item)
                 print message
-                print "Will try to connect with 'localhost' instead of", str(db_dict['host'])
+                print "Will try to connect with 'localhost' instead of", str(self.db_dict['host'])
             try:
                 self.db_dict['host'] = 'localhost'
                 connect_token = "dbname='" + self.db_dict['dbname'] + "' user='" + self.db_dict['user'] + \
@@ -113,6 +115,95 @@ class PgSQL(object):
 # Initialize on module import
 #with Lock() as connection_pool_lock:
 pg = PgSQL()
+
+class CopyToQuery(object):
+
+    def __init__(self, df, query, where_id, table, join_key = None, args_dict = None, connection = None,
+                 csv_file_prefix = None, csv_file_postfix = None):
+        # Establishes DB connection
+        self.close_connection = False
+        self.connection = connection
+        if not self.connection:
+            self.get_connection()
+            self.close_connection = True
+        cursor = self.connection.cursor()
+        # Retrieves records to be eliminited from df (ie. possible duplicates in the table)
+        # Builds query based on the value of where_id. If none uses the query as it was given
+        if query:
+            if where_id:
+                if isinstance(where_id, list):
+                    q = query % tuple([str(id) for id in where_id])
+                else:
+                    q = query % str(where_id)
+            else:
+                q = query
+            print "### Querying '%s' -- This may take up to one minute, be patient... ###" % q
+            ref_df = pd.read_sql(q, self.connection, coerce_float=False)
+            try:
+                for col in list(ref_df):
+                    if "_id" in col:
+                        ref_df = convert_dataframe_column_to_integer(ref_df, col)
+            except:
+                ref_df = convert_dataframe_column_to_integer(ref_df, 'sms_id')
+            # Eliminates possible duplicates
+            if not join_key: join_key = 'sms_id'
+            df = df.drop_duplicates(join_key)
+            res = map_existing_rows(df, ref_df, join_key = join_key)
+            #res = map_existing_rows(df, ref_df, join_key = ['mail_id', 'sms_id'])
+            if res[0]:
+                matched_df = res[1]
+                to_be_inserted_df = matched_df[matched_df['new'] == True]
+                # Deals with the columns of the resulting df in view of insert into the DB table
+            #to_be_inserted_df = pd.merge(df, ref_df)
+            # If args_dict, parses the dict to append 'key' column with fixed 'value' for all records
+            if args_dict:
+                 # By default, keeps only mail_id
+                col_list = ['mail_id']
+                for col, value in args_dict.iteritems():
+                    print col, value
+                    to_be_inserted_df[col] = value
+                col_list.extend(list(args_dict))
+                # Suppresses all columns not in col_list (ie. remain only 'mail_id' and the keys in args_dict)
+                to_be_inserted_df = to_be_inserted_df[col_list]
+
+            else:
+                to_be_inserted_df = to_be_inserted_df.drop(['exist', 'new'], axis=1)
+        else:
+            to_be_inserted_df = df
+            # Deals with the columns of the resulting df in view of insert into the DB table
+            # If args_dict, parses the dict to append 'key' column with fixed 'value' for all records
+            if args_dict:
+                for col, value in args_dict.iteritems():
+                    print col, value
+                    to_be_inserted_df[col] = value
+
+
+
+        import_df_to_DB(to_be_inserted_df, table, csv_file_prefix, csv_file_postfix,
+                        self.connection, self.connection.cursor())
+
+        """show_df(to_be_inserted_df)
+        csv_columns = list(to_be_inserted_df.columns)
+        file_name = create_file_name('Python', table, len(to_be_inserted_df.index), \
+                                     header = csv_columns, comment = "new-records")
+        path = path_containing_all_csv
+        folder = table
+        csv_file = write_to_csv(to_be_inserted_df, path, folder, file_name)
+        if csv_file:
+            csv_reader = codecs.open(csv_file, 'r', encoding='utf-8')
+            cursor.copy_from(file = csv_reader, table = table,
+                                   sep = ";", null = "", columns = csv_columns)
+            connection.commit()
+            message = "OK : csv imported to DB in table : " + table"""
+
+    def get_connection(self):
+        self.close_connection = True
+        self.connection = pg.get_connection()
+        self.cursor = self.connection.cursor()
+
+    def __del__(self):
+        if self.close_connection: self.connection.close()
+
 
 class Query(object):
     def __init__(self, cursor, connection, query_dict, query_name, args, return_result = True, multi_result = False):
@@ -366,17 +457,89 @@ class SMS(object):
             print res
 
 class SMSClient(object):
-    query_dict = {}
+    query_dict = {'insert_client' : "INSERT INTO sms_client(name, create_date, parent_id, contact, admin_contact, fid_cpm_price, " + \
+                                    "acg_cpm_price, sms_referral_id, created_by) VALUES ( %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                  'select_client_by_name' : 'SELECT * FROM sms_client WHERE name = %s',
+                  'select_client_by_id' : 'SELECT * FROM sms_client WHERE id = %s'}
 
-    def __init__(self):
-        pass
-
-    def get_connection(self):
+    def __init__(self, connection = None, cursor = None, name = None, create_date = None, parent_id = None, contact = None,
+                 admin_contact = None, fid_cpm_price = None, acg_cpm_price = None, sms_referral_id = None, created_by = None):
+        self.cursor = cursor
+        self.connection = connection
         if not self.connection:
-            if self.debug: print "--- Establishing connection with DB ---"
+            self.close_connection = True
             self.connection = pg.get_connection()
             self.cursor = self.connection.cursor()
+        else:
+            self.close_connection = False
+        self.id = None
+        self.name = name
+        self.create_date = create_date
+        self.parent_id = parent_id
+        self.contact = contact
+        self.admin_contact = admin_contact
+        self.fid_cpm_price = fid_cpm_price
+        self.acg_cpm_price = acg_cpm_price
+        self.sms_referral_id = sms_referral_id
+        self.created_by = created_by
+
+    def insert(self):
+        q = Query(self.cursor, self.connection, self.query_dict, 'select_client', [self.name], True)
+        self.id = unpack(q.execute())
+        if not self.id:
+            args = [self.name, self.create_date, self.parent_id, self.contact, self.admin_contact, self.fid_cpm_price,
+                    self.acg_cpm_price, self.sms_referral_id, self.created_by]
+            q = Query(self.cursor, self.connection, self.query_dict, "insert_client", args, True)
+            self.id = unpack(q.execute())
+
+    def get(self, id = None, name = None):
+        if id:
+            q = Query(self.cursor, self.connection, self.query_dict, 'select_client_by_id', [str(id)], True)
+            res = unpack(q.execute())
+        elif name:
+            q = Query(self.cursor, self.connection, self.query_dict, 'select_client_by_name', [name], True)
+            res = unpack(q.execute())
+        else:
+            return False
+        if res:
+            self.id, self.name, self.create_date, self.parent_id, self.contact, self.admin_contact, self.fid_cpm_price, \
+            self.acg_cpm_price, self.sms_referral_id, self.created_by = res
+            return True
+
+    def __del__(self):
+        if self.close_connection: self.connection.close()
+
+class SMSReferral(object):
+    query_dict = {'insert_referral' : "INSERT INTO sms_referral(name, contact, admin_contact, create_date, created_by, "
+                                      "fid_commission, acq_commission) VALUES ( %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                  'select_referral' : 'SELECT id FROM sms_referral WHERE name = %s'}
+
+    def __init__(self, connection = None, cursor = None, name = None, create_date = None, contact = None, admin_contact = None,
+                 fid_commission = None, acq_commission = None, created_by = None ):
+        self.cursor = cursor
+        self.connection = connection
+        if not self.connection:
             self.close_connection = True
+            self.connection = pg.get_connection()
+            self.cursor = self.connection.cursor()
+
+        else:
+            self.close_connection = False
+        self.name = name
+        self.create_date = create_date
+        self.contact = contact
+        self.admin_contact = admin_contact
+        self.fid_commission = fid_commission
+        self.acq_commission = acq_commission
+        self.created_by = created_by
+
+    def insert(self):
+        q = Query(self.cursor, self.connection, self.query_dict, 'select_referral', [self.name], True)
+        self.id = unpack(q.execute())
+        if not self.id:
+            args = [self.name, self.create_date, self.contact, self.admin_contact, self.fid_commission, self.acg_commission, self.created_by]
+            q = Query(self.cursor, self.connection, self.query_dict, "insert_referral", args, True)
+            self.id = unpack(q.execute())
 
     def __del__(self):
         if self.close_connection: self.connection.close()
@@ -410,6 +573,52 @@ class HLR(object):
         self.res_df = None
         self.batch_id = None
         self.batch_status = None
+
+    def read_file(self, folder = None, file = None):
+        print "--- Loading into dataframe : %s ---" % str(file)
+        self.res_df = pd.read_csv(folder + "/" + file, dtype = basestring)
+        #show_df(self.res_df)
+
+    def clean_dataframe(self):
+        try:
+            #self.res_df.rename(columns = {"MSISDN" : 'sms'}, inplace = True)
+            self.res_df['sms'] = self.res_df.MSISDN.apply(lambda num: "+" + str(num))
+            self.res_df['sms_md5'] = self.res_df.sms.apply(lambda x : hash_to_md5(x))
+            self.res_df['valid'] = self.res_df['Error Code'].apply(lambda x : True if str(x) == '0' else False)
+            self.res_df['Date Checked'] = self.res_df['Date Checked'].apply(lambda x : read_string_dates(str(x)[:-15]))
+            #show_df(self.res_df)
+            if len(self.res_df.index) > 0:
+                return True
+            else:
+                return False
+        except:
+            return False
+
+    def format_dataframe_for_import_in_db(self, ref_df = None):
+        col_dict = {'valid':'valid', 'Date Checked':'create_date', 'sms_md5':'sms_md5', 'Original Network':'original_network',
+                    'Current Network':'current_network', "Error Code":'error_code', 'Current Country':'current_country',
+                    'Roaming Country':'roaming_country', 'Type':'type'}
+        self.res_df = self.res_df[col_dict.keys()]
+        self.res_df.rename(columns=col_dict, inplace=True)
+        show_df(self.res_df)
+        if not ref_df:
+            self.get_connection()
+            query = 'SELECT id AS sms_id, sms_md5 FROM sms WHERE sms_md5 IN (%s)' % \
+                    str(", ".join(["'%s'" % md5 for md5 in self.res_df['sms_md5'].values.tolist()]))
+            ref_df = load_query(self.connection, query)
+        self.res_df = pd.merge(self.res_df, ref_df, on = 'sms_md5')
+        self.res_df.drop('sms_md5', axis = 1, inplace = True)
+        show_df(self.res_df)
+
+    def import_dataframe_in_db(self):
+        self.format_dataframe_for_import_in_db()
+        self.rejected_df = self.res_df.loc[self.res_df['valid'] == False, ['sms_id', 'create_date']]
+        self.rejected_df['reason'] = "HLRLookup"
+        show_df(self.rejected_df)
+        query = "SELECT DISTINCT sms_id FROM sms_lookup"
+        CopyToQuery(self.res_df, query, None, 'sms_lookup', 'sms_id', None, self.connection, "HLRLookup", None)
+        query = "SELECT DISTINCT sms_id FROM sms_rejected"
+        CopyToQuery(self.rejected_df, query, None, 'sms_rejected', 'sms_id', None, self.connection, "HLRLookup", None)
 
     def process_file(self, folder = None, file = None, write_in_db = False, connection = None, debug = True):
         self.res_df = pd.read_csv(folder + "/" + file, dtype = basestring)
@@ -649,28 +858,35 @@ class HLR(object):
                 data.append(res_line.split(","))
             df = pd.DataFrame(data[1:-1], columns = data[0])
             #show_df(df)
-            df.rename(columns = {"" : 'sms'}, inplace = True)
+            #df.rename(columns = {"" : 'sms'}, inplace = True)
             self.res_df = df
-            self.res_df.sms = self.res_df.sms.apply(lambda x : '+' + str(x))
-            self.res_df['sms_md5'] = self.res_df.sms.apply(lambda x : hash_to_md5(x))
-            self.res_df['valid'] = self.res_df['Error Code'].apply(lambda x : True if str(x) == '0' else False)
-            self.res_df['Date Checked'] = self.res_df['Date Checked'].apply(lambda x : read_string_dates(x))
+            valid = self.clean_dataframe()
+            if not valid:
+                try:
+                    self.res_df.sms = self.res_df.sms.apply(lambda x : '+' + str(x))
+                    self.res_df['sms_md5'] = self.res_df.sms.apply(lambda x : hash_to_md5(x))
+                    self.res_df['valid'] = self.res_df['Error Code'].apply(lambda x : True if str(x) == '0' else False)
+                    self.res_df['Date Checked'] = self.res_df['Date Checked'].apply(lambda x : read_string_dates(x))
+                except:
+                    print "There is a problem with the df returned by HLR Lookup -- Impossible to clean -- It looks like this :"
+                    show_df(df)
             if debug:
                 print "See below resulting df"
                 show_df(self.res_df)
-            if write_to_db:
-                    pass
 
             self.valid_df = self.res_df.loc[self.res_df.valid == True,'sms']
-            self.valid_rate = round(len(self.valid_df.index) / len(local_clean_sms_list), 2)
+            self.valid_rate = round(len(self.valid_df.index) / len(self.sms_list), 2)
             if debug:
                 print "%s valid SMS in %s checked --> valid rate = %s" % \
-                      (str(len(self.valid_df.index)), str(len(local_clean_sms_list)), str(self.valid_rate))
+                      (str(len(self.valid_df.index)), str(len(self.sms_list)), str(self.valid_rate))
+            if write_to_db:
+                Thread(target=self.import_dataframe_in_db).start()
             if write_to_file:
                 self.valid_df.to_csv(folder + "/" + file, index = False)
             return(self.valid_df, self.valid_rate)
 
 class SMSQuery(object):
+
     field_dict = {'sms' : 's.sms AS sms',
                   'sms_id' : 's.id AS sms_id',
                   'cp' : 'id.cp AS cp',
@@ -696,12 +912,28 @@ class SMSQuery(object):
                   'mail_md5' : 'md5.md5 AS mail_md5',
                   'sms_md5' : 'MD5(s.sms) AS sms_md5',
                   'md5_sms' : 'MD5(s.sms) AS md5_sms'}
-    def __init__(self, count = True, user = 'david', client = 'argus', sms_table = 'sms', sms_id_table = 'id',
+
+    query_dict = {'insert_query' : "INSERT INTO sms_api_query " + \
+                                   "(user_name, create_date, client_id, geo_dict, geo_criteria, geo_list, age_min, age_max, civi, " + \
+                                   "interest_list, proxi_list, df_result, query_name) VALUES " + \
+                                   "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                  'select_query' : "SELECT user_name, create_date, client_id, geo_dict, geo_criteria, geo_list, age_min, age_max, civi, " + \
+                                   "interest_list, proxi_list, df_result, query_name FROM sms_api_query WHERE id = %s",
+                  'insert_campaign' : "INSERT INTO sms_api_campaign (client_id, create_date, query_id, " + \
+                                      "campaign_name, user_name, volume_client, volume_sent) VALUES " + \
+                                      "(%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                  'update_campaign' : "UPDATE sms_api_campaign SET volume_sent = %s, router_list_id = %s " + \
+                                      "WHERE id = %s",
+                  'select_related_campaign' : "SELECT id FROM sms_api_campaign WHERE query_id = '%s' ORDER DESC LIMIT 1"}
+
+    def __init__(self, id = None, user = 'david', client_id = None, client_name = None, sms_table = 'sms', sms_id_table = 'id',
                  connection = None, cursor = None, debug = True):
-        self.count = count
-        self.user = user
-        self.client = client
+        self.date = d.datetime.now().date().isoformat()
+        self.create_date = d.datetime.now().replace(microsecond=0).isoformat()
         self.close_connection = False
+        self.connection = connection
+        self.cursor = cursor
+        self.debug = debug
         self.sms_table = sms_table
         self.sms_id_table = sms_id_table
         self.from_clause = "FROM %s AS s JOIN sms_mail AS sm ON s.id = sm.sms_id RIGHT JOIN %s AS id ON id.mail_id = sm.mail_id " \
@@ -710,6 +942,12 @@ class SMSQuery(object):
         self.where_clause = None
         self.groupby_clause = None
         self.limit_clause = None
+        self.df_result = None
+        self.interest_list = None
+        self.proxi_list = None
+        self.geo_dict = None
+        self.geo_dict_with_limit = None
+        self.global_limit = None
         self.geo_criteria = None
         self.geo_list = None
         self.cp_list = None
@@ -745,10 +983,18 @@ class SMSQuery(object):
         self.groupby_sql = None
         self.valid_df = None
         self.valid_rate = None
-        self.connection = connection
-        self.cursor = cursor
-        self.debug = debug
         self.query = None
+        self.campaign = None
+        self.campaign_id = None
+        self.client_associated = False
+        self.client = None
+        self.id = id
+        self.user_name = user
+        self.client_id = client_id
+        self.client_name = client_name
+        self.query_name = None
+        self.retrieve_data_from_id()
+        self.retrieve_client()
 
     def where(self, geo_criteria = None, geo_list = None, age_min = None, age_max = None, civi = None, cp_precision = 5,
               proxi = None, interest = None, sms_list = None, city_cp_strict = True, sql_city_list = None):
@@ -929,10 +1175,24 @@ class SMSQuery(object):
             self.where_clause = ""
 
     def count_multi(self, geo_dict = None, geo_criteria = None, geo_list = None, cp_precision = 5,
-                    age_min = None, age_max = None, civi = None, interest_list = None, proxi_list = None):
+                    age_min = None, age_max = None, civi = None, interest_list = None, proxi_list = None,
+                    user = None, client_id = None, client_name = None):
+        if interest_list: self.interest_list = interest_list
+        if proxi_list: self.proxi_list = proxi_list
+        if geo_dict: self.geo_dict = geo_dict
+        if geo_criteria: self.geo_criteria = geo_criteria
+        if geo_list: self.geo_list = geo_list
+        if cp_precision: self.cp_precision = cp_precision
+        if age_min: self.age_min = age_min
+        if age_max: self.age_max = age_max
+        if civi: self.civi = civi
+
+        self.retrieve_client(client_id, client_name)
+        self.create_query_name(user, client_id, client_name)
+
         if geo_dict:
             threads = []
-            for geo_criteria, geo_list in geo_dict.iteritems():
+            for geo_criteria, geo_list in self.geo_dict.iteritems():
                 for geo_item in geo_list:
                     t = ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item),
                                     target = sms_query_count_single_geo_item,
@@ -952,16 +1212,102 @@ class SMSQuery(object):
             if t_res:
                 data.append(t_res)
         result = pd.DataFrame(data = data, columns = ['entity', 'name', 'nb_sms'])
-        if interest_list:
-            if not isinstance(interest_list, list): interest_list = [interest_list]
-            for interest_id in interest_list:
+        if self.interest_list:
+            if not isinstance(self.interest_list, list): self.interest_list = [self.interest_list]
+            for interest_id in self.interest_list:
                 result = adjust_for_interest(result, interest_id, amplitude = 0.05, col_to_adjust = 'nb_sms', base = 1.2)
-        if proxi_list:
-            if not isinstance(proxi_list, list): proxi_list = [proxi_list]
+        if self.proxi_list:
+            if not isinstance(self.proxi_list, list): self.proxi_list = [self.proxi_list]
             for proxi in proxi_list:
                 result = adjust_for_proxi(result, proxi = proxi, amplitude = 0.05, col_to_adjust = 'nb_sms', base = 1.2)
         show_df(result)
+        json_result = {}
+        json_result['columns'] = list(result)
+        json_result['values'] = result.values.tolist()
+        self.df_result = json.dumps(json_result)
+        self.store_in_db()
+        # return self.id <-- need to return self.id in the webservice's JSON
         return result
+
+    def select_multi(self, query_id = None, global_limit = None, select_field = ['sms','age','gender','cp'], hlr_lookup = True,
+                     geo_dict_with_limit = None, geo_dict = None, geo_criteria = None, geo_list = None, cp_precision = 5,
+                     age_min = None, age_max = None, civi = None, interest_list = None, proxi_list = None,
+                     user = None, client_id = None, client_name = None):
+        # Loads parameters
+        if global_limit: self.global_limit = int(global_limit)
+        if geo_dict_with_limit: self.geo_dict_with_limit = geo_dict_with_limit
+
+        # Priority given to query_id, in which case the parameters are retrieved from the DB
+        if query_id:
+            self.id = query_id
+            self.retrieve_data_from_id()
+        else:
+            if interest_list: self.interest_list = interest_list
+            if proxi_list: self.proxi_list = proxi_list
+            if geo_dict: self.geo_dict = geo_dict
+            if geo_criteria: self.geo_criteria = geo_criteria
+            if geo_list: self.geo_list = geo_list
+            if cp_precision: self.cp_precision = cp_precision
+            if age_min: self.age_min = age_min
+            if age_max: self.age_max = age_max
+            if civi: self.civi = civi
+
+        self.retrieve_client(client_id, client_name)
+        self.create_query_name(user, client_id, client_name)
+
+        # Gets the selection with threading on each geo parameter
+        threads = []
+        # Case with limits given for each geo point
+        if self.geo_dict_with_limit:
+            for geo_criteria, geo_list_with_limit in self.geo_dict_with_limit.iteritems():
+                # Checks that geo_list_with_limit truly has limits specified
+                # In the case that it is a list (ie. no limits specified) : rebuilds a dict with all limits set to None
+                if isinstance(geo_list_with_limit, list):
+                    replacement_dict = {}
+                    for geo_list in geo_list_with_limit:
+                        replacement_dict[geo_list] = None
+                    geo_list_with_limit = replacement_dict
+                for geo_item, limit_item in geo_list_with_limit.iteritems():
+                    t = ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item) + "_" + (str(limit_item) if limit_item else "no-limit"),
+                                     target = sms_query_select_sample_geo_item,
+                                     args = (limit_item, geo_criteria, geo_item, 5, age_min, age_max, civi, select_field))
+                    threads.append(t)
+        # Case with no limit given for any geo pint (either a geo_dict, or a single (geo_criteria, geo_list) couple
+        # This would be typically the case of a SMSQuery() being called by its query_id, with a global_limit given by the client
+        elif self.geo_dict:
+            for geo_criteria, geo_list in self.geo_dict.iteritems():
+                for geo_item in geo_list:
+                    t = ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item) + "_" + str("no-limit"),
+                                     target = sms_query_select_sample_geo_item,
+                                     args = (None, geo_criteria, geo_item, 5, age_min, age_max, civi, select_field))
+                    threads.append(t)
+        else:
+            threads = [ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item) + "_" + str("no-limit"),
+                                     target = sms_query_select_sample_geo_item,
+                                     args = (None, geo_criteria, geo_item, 5, age_min, age_max, civi, select_field))
+                       for geo_item in geo_list]
+        # Running the treads
+        for t in threads:
+            t.start()
+        data = []
+        for t in threads:
+            t_res = t.join()
+            if t_res[0]:
+                df = t_res[1]
+                df['source'] = str(t.name)
+                data.append(df)
+        result = pd.concat(data)
+        if global_limit:
+            global_limit = enlarge_sample(global_limit)
+            result = sample_or_same(result, global_limit)
+        self.df = result
+        if hlr_lookup:
+            self.hlr_cleanup()
+        self.store_campaign_in_db()
+        self.store_sms_list_in_db()
+        if self.upload_to_router(list_name = self.query_name):
+            self.update_campaign_in_db()
+        return self.df
 
     def eval_geo(self):
         if self.geo_criteria in ['cp', 'zip', 'zip_code'] or self.geo_criteria == None:
@@ -1022,13 +1368,14 @@ class SMSQuery(object):
             self.select(select_field)
             if len(self.df.index) < limit:
                 self.cp_precision = self.cp_precision - 1
-                self.where(self.geo_criteria, self.geo_list, self.sql_city_list, self.cp_precision,
-                            self.age_min, self.age_max, self.civi, self.sms_list, self.city_cp_strict)
+                self.where(self.geo_criteria, self.geo_list, self.age_min, self.age_max, self.civi, self.cp_precision,
+                            self.proxi_list, self.interest_list, self.sms_list, self.city_cp_strict, self.sql_city_list)
+
                 self.get_df()
                 while len(self.df.index) < limit and self.cp_precision >= 2:
                     self.cp_precision = self.cp_precision - 1
-                    self.where(self.geo_criteria, self.geo_list, self.sql_city_list, self.cp_precision,
-                                self.age_min, self.age_max, self.civi, self.sms_list, self.city_cp_strict)
+                    self.where(self.geo_criteria, self.geo_list, self.age_min, self.age_max, self.civi, self.cp_precision,
+                            self.proxi_list, self.interest_list, self.sms_list, self.city_cp_strict, self.sql_city_list)
                     self.get_df()
             self.df = sample_or_same(self.df, limit)
         return self.df
@@ -1299,7 +1646,7 @@ class SMSQuery(object):
         if self.debug: show_df(self.df)
         return self.df
 
-    def hlr_cleanup(self, batch_name = 'batch_uploaded_Python', write_to_file = False, folder = None, file = None,
+    def hlr_cleanup(self, batch_name = None, write_to_file = False, folder = None, file = None,
                     write_to_db = True, connection = None):
         if write_to_db:
             if not connection:
@@ -1312,18 +1659,92 @@ class SMSQuery(object):
             self.get_df()
             sms_list = self.df.sms.tolist()
 
+        if not batch_name:
+            if self.query_name:
+                batch_name = self.query_name
+            else:
+                batch_name = 'batch_%s' % str(self.date)
+
         h = HLR(sms_list)
         res = h.batch(batch_name, write_to_file, folder, file, write_to_db, connection)
         if res:
             self.valid_df, self.valid_rate = res
-            show_df(self.valid_df)
+            #self.valid_df = pd.DataFrame(data = self.valid_df.sms.tolist(), columns = ['sms'])
+            self.df = pd.merge(self.valid_df.to_frame('sms'), self.df, on = 'sms', how = 'left')
+            print "## HLR Lookup completed : below is the new self.df within SMSQuery() object ##"
+            show_df(self.df)
+
+    def store_campaign_in_db(self, associate_campaign = False):
+        if not self.connection: self.get_connection()
+        if not self.id: self.store_in_db()
+        sum_dict_limit = 0
+        if self.geo_dict_with_limit:
+            for criteria, dict_limit in self.geo_dict_with_limit.iteritems():
+                for geo_item, geo_limit in dict_limit.iteritems():
+                    try:
+                        sum_dict_limit += int(geo_limit)
+                    except:
+                        pass
+        if self.global_limit:
+            if sum_dict_limit == 0:
+                sum_dict_limit = self.global_limit
+            else:
+                if self.global_limit < sum_dict_limit:
+                    sum_dict_limit = self.global_limit
+        if sum_dict_limit > 0:
+            volume_client = str(sum_dict_limit)
+        else:
+            volume_client = None
+
+        try:
+            volume_sent = len(self.df.index)
+        except:
+            volume_sent = 0
+        if volume_sent > 0:
+            volume_sent = str(volume_sent)
+        else:
+            volume_sent = None
+
+        args = [str(self.client_id), d.datetime.now().replace(microsecond=0).isoformat(), str(self.id),
+                self.query_name, self.user_name, volume_client, volume_sent]
+        q = Query(self.cursor, self.connection, self.query_dict, 'insert_campaign', args, True)
+        self.campaign_id = unpack(q.execute())
+        if associate_campaign:
+            c = SMSCampaign(self.campaign_id)
+            c.retrieve_data_from_db(False)
+            self.campaign = c
+
+    def store_sms_list_in_db(self):
+        sent_df = self.df.copy(True)
+        try:
+            sent_df['sms_md5'] = sent_df['sms'].apply(lambda x: hash_to_md5(x))
+        except:
+            return False
+        if self.campaign_id:
+            if not self.connection: self.get_connection()
+            if 'source' in list(self.df):
+                sent_df = sent_df.loc[:,['sms_md5', 'source']]
+            else:
+                sent_df = sent_df.loc[:,['sms_md5']]
+                sent_df['source'] = ""
+            sent_df['campaign_id'] = self.campaign_id
+            q = "SELECT sms_md5, id AS sms_id FROM sms WHERE sms_md5 IN (%s)" % \
+                ", ".join(["'%s'" % str(x) for x in sent_df.sms_md5.tolist()])
+            md5_df = load_query(self.connection, q, False)
+            sent_df = pd.merge(sent_df, md5_df, on = 'sms_md5', how = 'left')
+            sent_df.drop('sms_md5', axis = 1, inplace = True)
+            q = "SELECT DISTINCT ON (sms_id) sms_id FROM sms_sent WHERE campaign_id = '%s'"
+            CopyToQuery(sent_df, q, self.campaign_id, 'sms_sent', 'sms_id', None, self.connection, self.query_name)
+        else:
+            return False
 
     def upload_to_router(self, list_name = 'list_created_Python', list_id = None, max_limit = 100000):
         sms_list = None
         try:
-            sms_list = self.valid_df.sms.tolist()
+            sms_list = self.df.sms.tolist()
         except:
-            sms_list = self.valid_df.tolist()
+            print "## Warning : Non SMS numbers in the dataframe to be passed to the router ##"
+            return False
         if sms_list:
             if len(sms_list) > 0:
                 if len(sms_list) > max_limit:
@@ -1332,10 +1753,86 @@ class SMSQuery(object):
                     pt = PrimoTextoAPI()
                     if not list_id:
                         self.router_list_id = pt.create_list(list_name)
-                        pt.upload_list(sms_list)
                     else:
                         self.router_list_id = list_id
-                        pt.upload_list(sms_list, list_id = self.router_list_id)
+                    res = pt.upload_list(self.df, list_id = self.router_list_id)
+                    return res
+        return False
+
+    def update_campaign_in_db(self, associate_campaign = True):
+        args = [str(len(self.df.index)), str(self.router_list_id), str(self.campaign_id)]
+        q = Query(self.cursor, self.connection, self.query_dict, 'update_campaign', args, False)
+        q.execute()
+        if associate_campaign:
+            c = SMSCampaign(self.campaign_id)
+            c.retrieve_data_from_db(False)
+            self.campaign = c
+
+    def retrieve_data_from_id(self):
+        if self.id:
+            if not self.connection: self.get_connection()
+            q = Query(self.cursor, self.connection, self.query_dict, 'select_query', [str(self.id)], True, True)
+            res = unpack(q.execute())
+            if res:
+                self.user_name, self.create_date, self.client_id, self.geo_dict, self.geo_criteria, self.geo_list, self.age_min,\
+                self.age_max, self.civi, self.interest_list, self.proxi_list, self.df_result, self.query_name = res
+
+                if self.geo_dict: self.geo_dict = eval(self.geo_dict)
+                if self.geo_list: self.geo_list = eval(self.geo_list)
+
+    def retrieve_client(self, client_id = None, client_name = None):
+        if not self.client_associated:
+            if client_id: self.client_id = client_id
+            if client_name: self.client_name = client_name
+            self.client = SMSClient()
+            if self.client_id:
+                self.client_associated = self.client.get(id = self.client_id)
+                if self.client_associated: self.client_name = self.client.name
+            elif self.client_name:
+                self.client_associated = self.client.get(name = self.client_name)
+                if self.client_associated: self.client_id = self.client.id
+
+    def create_query_name(self, user = None, client_id = None, client_name = None):
+        if not self.query_name:
+            if not self.client_associated:
+                self.retrieve_client(client_id, client_name)
+
+            if self.client_associated:
+                try:
+                    self.client_name = self.client.name.lower()
+                except:
+                    if client_name: self.client_name = client_name
+            if not self.client_name:
+                if client_name: self.client_name = client_name
+                self.client_name = "client?"
+
+            if not self.user_name:
+                if user: self.user_name = user
+                if not self.user_name: self.user_name = "user?"
+
+            self.query_name = "_".join([self.user_name, self.client_name, self.date])
+
+    def store_in_db(self, user_name = None, client_id = None):
+        if user_name: self.user_name = user_name
+        if client_id: self.client_id = client_id
+        if not self.connection: self.get_connection()
+        args = [str(self.user_name), d.datetime.now().replace(microsecond=0).isoformat(), str(self.client_id), str(self.geo_dict),
+                str(self.geo_criteria), str(self.geo_list), str(self.age_min), str(self.age_max), str(self.civi),
+                str(self.interest_list), str(self.proxi_list), str(self.df_result), str(self.query_name)]
+        q = Query(self.cursor, self.connection, self.query_dict, 'insert_query', args, True)
+        self.id = unpack(q.execute())
+
+    def get_related_campaign_id_in_db(self):
+        if not self.connection: self.get_connection()
+        if self.id:
+            q = Query(self.cursor, self.connection, self.query_dict, 'select_related_campaign', [str(self.id)], True)
+            self.campaign_id = unpack(q.execute())
+
+    def retrieve_data_from_campaign_id(self, campaign_id = None):
+        if campaign_id: self.campaign_id = campaign_id
+        c = SMSCampaign(self.campaign_id)
+        c.retrieve_data_from_db(False)
+        self.campaign = c
 
     def get_connection(self):
         if not self.connection:
@@ -1365,6 +1862,177 @@ def sms_query_count_single_geo_item(geo_criteria = None, geo_item = None, cp_pre
     else:
         res = False
     return res
+
+def sms_query_select_sample_geo_item(limit = None, geo_criteria = None, geo_item = None, cp_precision = 5,
+                                     age_min = None, age_max = None, civi = None, select_field = None):
+    if limit:
+        if str(limit) == '0':
+            return (False, None)
+    s = SMSQuery()
+    s.where(geo_criteria = geo_criteria, geo_list = geo_item, age_min = age_min, age_max = age_max, civi = civi,
+            cp_precision = cp_precision, proxi = None, interest = None, sms_list = None, city_cp_strict = True, sql_city_list = None)
+    if limit:
+        df = s.select_sample(select_field = select_field, limit = limit, hlr_factor = 1.25, error_factor = 1.1)
+    else:
+        df = s.select(select_field = select_field, limit = None, hlr_factor = 1.25, error_factor = 1.1)
+    return (True, df)
+
+class SMSCampaign(object):
+    placeholder_dict = {'primotexto' : '${rich_message}'}
+    list_id_default_dict = {'primotexto' : '5a61d9f07076b97ff6360ae3'}
+    query_dict = {'select_campaign' : "SELECT * FROM sms_api_campaign WHERE id = %s",
+                  'update_campaign' : "UPDATE sms_api_campaign SET sender = %s, message = %s, send_date = %s, " + \
+                                      "bat_list = %s, router_list_id = %s, router = %s, router_campaign_id = %s " + \
+                                      "WHERE id = %s",
+                  'insert_campaign' : "INSERT INTO sms_api_campaign (sender, message, send_date, " + \
+                                      "bat_list, router_list_id, router, router_campaign_id, create_date) VALUES " + \
+                                      "(%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                  'insert_bat' : "INSERT INTO sms_api_bat_sent (campaign_id, sms, sent_date) VALUES (%s, %s, %s)",
+                  'update_bat_status' : "UPDATE sms_api_campaign SET bat_sent = TRUE WHERE id = %s"}
+
+    def __init__(self, id = None):
+        self.date = d.datetime.now().date().isoformat()
+        self.debug = True
+        self.connection = None
+        self.cursor = None
+        self.close_connection = False
+        self.query_id = None
+        self.query = None
+        self.client_id = None
+        self.client = None
+        self.client_name = None
+        self.campaign_name = None
+        self.message = None
+        self.sender = None
+        self.url = None
+        self.router = None
+        self.create_date = None
+        self.bat_list = None
+        self.bat_sent = False
+        self.extra_recipients = None
+        self.volume_sent = None
+        self.volume_client = None
+        self.user_name = None
+        self.router_list_id = None
+        self.router_campaign_id = None
+        self.id = None
+        if id: self.id = id
+        self.retrieve_data_from_db(get_parents = True)
+
+    def create_in_router(self, sender = None, message = None, send_date = None, bat_list = None,
+                         list_id = None, router = 'primotexto'):
+        if sender: self.sender = sender
+        if message: self.message = message
+        if send_date: self.send_date = send_date
+        if bat_list: self.bat_list = bat_list
+        if list_id: self.list_id = list_id
+        if router: self.router = router
+        router_message = self.message
+        if "[[" in self.message:
+            begin, after = self.message.split("[[")
+            if "]]" in after:
+                url, end = after.split("]]")
+                if not test_url(url):
+                    print "## Warning !! Url '%s' does not respond ##" % str(url)
+                    return False
+                router_message = begin + self.placeholder_dict[self.router] + end
+                self.url = url
+        self.create_campaign_name()
+        if not self.router_list_id:
+            self.router_list_id = self.list_id_default_dict[self.router]
+            print "## No specific 'router_list_id' given for this campaign. It will use the default one instead. ##"
+        if self.router == 'primotexto':
+            pt = PrimoTextoAPI()
+            res = pt.create_campaign(self.campaign_name, router_message, self.sender, self.send_date,
+                                     self.url, self.router_list_id)
+            if res:
+                self.router_campaign_id = res
+            else:
+                print "## Warning !! Campaign NOT created in router. Pb. with sender '%s' or message ? ##" % str(self.sender)
+            self.update_data_in_db()
+        else:
+            self.update_data_in_db()
+        if self.bat_list: self.send_bat()
+
+
+    def send_bat(self, bat_list = None, campaign_id = None):
+        if bat_list: self.bat_list = bat_list
+        if self.bat_list: self.bat_list = convert_list_to_international_format(self.bat_list)
+        if self.bat_list:
+            if self.router == 'primotexto':
+                if not self.router_campaign_id:
+                    if campaign_id:
+                        self.router_campaign_id = campaign_id
+                    else:
+                        print "## Warning !! No router_campaign_id. You need to specify which campaign to send a bat to ##"
+                        return False
+                pt = PrimoTextoAPI()
+                for sms in self.bat_list:
+                    res = pt.send_bat_item(sms, campaign_id = self.router_campaign_id)
+                    if res:
+                        self.bat_sent = True
+                        args = [self.id, sms, d.datetime.now().replace(microsecond=0).isoformat()]
+                        q = Query(self.cursor, self.connection, self.query_dict, 'insert_bat', args, False)
+                        q.execute()
+                        print 'BAT envoyé au %s' % str(sms)
+            else:
+                pass
+        if self.bat_sent:
+            q = Query(self.cursor, self.connection, self.query_dict, 'update_bat_status', [self.id], False)
+            q.execute()
+
+    def update_data_in_db(self):
+        if not self.connection: self.get_connection()
+        args = [self.sender,self.message,self.send_date,self.bat_list,self.router_list_id ,self.router,self.router_campaign_id,
+                self.id]
+        args = [str(x) for x in args]
+        if self.id:
+            q = Query(self.cursor, self.connection, self.query_dict, 'update_campaign', args, False)
+            q.execute()
+        else:
+            args = args[:-1]
+            args.append(d.datetime.now().replace(microsecond=0).isoformat())
+            q = Query(self.cursor, self.connection, self.query_dict, 'insert_campaign', args, True)
+            self.id = unpack(q.execute())
+
+
+    def create_campaign_name(self):
+        self.date = d.datetime.now().date().isoformat()
+        if not self.user_name: self.user_name = "user?"
+        if not self.client_name:
+            try:
+                self.client_name = self.client.name
+            except:
+                self.client_name = "client?"
+        if not self.sender: self.sender = "sender?"
+        simplify_sender = self.sender.replace(" ", "-").lower()
+        self.campaign_name = "_".join(self.user_name, self.client_name, simplify_sender, self.date)
+
+
+    def retrieve_data_from_db(self, get_parents = True):
+        if not self.connection: self.get_connection()
+        if self.id:
+            q = Query(self.cursor, self.connection, self.query_dict, 'select_campaign', [str(self.id)], True)
+            res = unpack(q.execute())
+            if res:
+                id, self.client_id, self.query_id, self.campaign_name, self.message, self.sender, self.url, self.router, \
+                self.create_date, self.bat_list, self.bat_sent, self.extra_recipients, self.volume_sent, self.volume_client, \
+                self.user_name, self.router_list_id, self.router_campaign_id, self.send_date = res
+                if get_parents:
+                    if self.query_id:
+                        q = SMSQuery(id = self.query_id)
+                        self.query = q
+
+    def get_connection(self):
+        if not self.connection:
+            if self.debug: print "--- Establishing connection with DB ---"
+            self.connection = pg.get_connection()
+            self.cursor = self.connection.cursor()
+            self.close_connection = True
+
+    def __del__(self):
+        if self.close_connection: self.connection.close()
+
 
 class SMSRouterStats(object):
     status_dict = {'Re?u' : "received", 'Re\xc3\xa7u' : 'received', 'Erreur (Temporaire)' : "temp_error",
@@ -1799,7 +2467,7 @@ class PrimoTextoAPI(object):
     def create_list(self, name):
         data = {"name": name}
         res = requests.post(self.url['list'], data = json.dumps(data), headers = self.headers)
-        print str(res.text)
+        print "## New list created in PrimoTexto: '%s' -- %s ##" % (name, str(res.text))
         try:
             self.list_id = res.json()['id']
             return self.list_id
@@ -1818,26 +2486,26 @@ class PrimoTextoAPI(object):
             print "Warning! API Call to PrimoTexto failed!!"
             print str(res.text)
 
-    def upload_list(self, sms_list = None, contact_df = None, list_id = None):
+    def upload_list(self, contact_df = None, list_id = None):
         if list_id:
             self.list_id = list_id
-        if sms_list:
-            data = [['tel']]
-            for sms in sms_list:
-                data.append([sms])
-            print str(data)
+        if 'sms' in list(contact_df):
+            contact_df.rename(columns = {'sms' : 'tel'}, inplace = True)
+            contact_df = contact_df.replace(np.nan, 'None')
+            data = contact_df.values.tolist()
+            data.insert(0, list(contact_df))
         else:
-            if 'sms' in list(contact_df):
-                contact_df.rename(columns = {'sms' : 'tel'}, inplace = True)
-                data = contact_df.values.tolist()
-                data.insert(0, list(contact_df))
-            else:
-                print "Warning! No SMS numbers passed to upload list '%s'" % str(self.list_id)
-                return
+            print "Warning! No SMS numbers passed to upload list '%s'" % str(self.list_id)
+            return False
+        for row in data[:5]:
+            print str(row)
         res = requests.post(self.url['import'] % str(self.list_id), data = json.dumps(data), headers = self.headers)
         print str(res.text)
+        if not res.text:
+            print "## %s contacts successfully uploaded in PrimoText, in list : %s ##" % (str(len(contact_df.index)), str(self.list_id))
+            return True
 
-    def create_campaign(self, name, message, sender, send_date = None, url = None, list_id = None):
+    def create_campaign(self, name, message, sender, send_date = None, url = None, list_id = '5a61d9f07076b97ff6360ae3'):
         if list_id:
             self.list_id = list_id
         data = {"name": name,
@@ -1849,6 +2517,7 @@ class PrimoTextoAPI(object):
                 parsed_date = dparser.parse(send_date, fuzzy = True, dayfirst = True)
                 date_in_s = parsed_date.strftime('%s')
                 date_in_ms = int(date_in_s) * 1000
+                print str(date_in_ms)
                 data['date'] = date_in_ms
             except:
                 print "** Warning !! No send_date **"
@@ -1857,8 +2526,11 @@ class PrimoTextoAPI(object):
             data["landingPageType"] = "EXTERNAL"
         res = requests.post(self.url['campaign'], data = json.dumps(data), headers = self.headers)
         print res.text
-        self.campaign_id = res.json()['campaignId']
-        print self.campaign_id
+        try:
+            self.campaign_id = res.json()['campaignId']
+            return self.campaign_id
+        except:
+            return False
 
     def send_bat(self, sms_list, campaign_id = None):
         if campaign_id:
@@ -1867,6 +2539,23 @@ class PrimoTextoAPI(object):
             data = {"identifier": sms}
             res = requests.post(self.url['bat'] % str(self.campaign_id), data = json.dumps(data), headers = self.headers)
             print res.text
+            #try:
+            #    res.json()['creditsUsed']
+            #    return True
+            #except:
+            #    return False
+
+    def send_bat_item(self, sms, campaign_id = None):
+        if campaign_id:
+            self.campaign_id = campaign_id
+        data = {"identifier": sms}
+        res = requests.post(self.url['bat'] % str(self.campaign_id), data = json.dumps(data), headers = self.headers)
+        print res.text
+        try:
+            res.json()['creditsUsed']
+            return sms
+        except:
+            return False
 
     def send(self, campaign_id = None):
         if campaign_id:

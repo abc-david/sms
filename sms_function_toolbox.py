@@ -13,7 +13,289 @@ import requests
 from threading import Thread
 import dateutil.parser as dparser
 from dateutil.relativedelta import relativedelta
+import codecs
+import time
+import datetime
+from urlparse import urlparse
 from sms_object_toolbox import *
+
+path_containing_all_csv = "/home/david/postgresql/csv_files"
+
+def prepared_statement(query_name, query):
+    cpt = 1
+    while "%s" in query:
+        query = query.replace("%s", "$" + str(cpt), 1)
+        cpt += 1
+    return "PREPARE %s AS %s" % (str(query_name), str(query))
+
+def execute_prepared_statement(connection, query_dict, key_list = []):
+    cursor = connection.cursor(cursor_factory = PreparingCursor)
+    if key_list:
+        for key in key_list:
+            for query_name, query in query_dict.iteritems:
+                if key in query_name:
+                    # try/escape to escape if the query has already been prepared by a prior call to this function
+                    try:
+                        cursor.prepare(query)
+                    except:
+                        pass
+    else:
+        for query in query_dict.itervalues():
+            cursor.prepare(query)
+    cursor.close()
+
+def cleanup_string(s):
+    if s:
+        if isinstance(s, (int,long)):
+            return s
+        elif isinstance(s, float):
+            if not "." in s:
+                return int(s)
+            else:
+                return s
+        elif isinstance(s, datetime.date):
+            return s.strftime('%Y-%m-%d')
+        elif isinstance(s, datetime.datetime):
+            return s.strftime('%Y-%m-%d')
+        else:
+            if "'" in s:
+                s = s.strip("'")
+            if s.isdigit():
+                if not "." in s:
+                    return int(s)
+                else:
+                    return s
+            else:
+                try:
+                    s = s.encode('utf-8')
+                except:
+                    pass
+                if s == 'None':
+                    return None
+                else:
+                    return s
+    else:
+        return None
+
+def unpack(return_result, type_allowed = (int, long, basestring, tuple, list)):
+    if isinstance(return_result, list):
+        if return_result[0]:
+            if return_result[1]:
+                if len(return_result[1]) == 1:
+                    if isinstance(return_result[1][0], type_allowed):
+                        return return_result[1][0]
+                else:
+                    return_list = []
+                    for item in return_result[1]:
+                        if isinstance(item, list):
+                            sub_list = []
+                            for sub_item in item:
+                                if isinstance(sub_item, type_allowed):
+                                    sub_list.append(sub_item)
+                                else:
+                                    sub_list.append(None)
+                            return_list.append(sub_list)
+                        elif isinstance(item, type_allowed):
+                            return_list.append(item)
+                        else:
+                            return_list.append(None)
+                    return return_list
+            else:
+                return None
+        else:
+            return None
+    else:
+        return None
+
+def load_query(pg_connection, query, print_query = True):
+    if print_query:
+        print "### Querying '%s' -- This may take up to one minute, be patient... ###" % query
+    ref_df = pd.read_sql(query, pg_connection, coerce_float=False)
+    show_df(ref_df)
+    #if 'mail_id' in list(ref_df):
+    #    ref_df = convert_dataframe_column_to_integer(ref_df, 'mail_id')
+    for col in list(ref_df):
+        if "_id" in col:
+            ref_df = convert_dataframe_column_to_integer(ref_df, col)
+    show_df(ref_df)
+    return ref_df
+
+def convert_dataframe_column_to_integer(dataframe, col):
+    try:
+        dataframe[col] = dataframe[col].astype(int)
+    except:
+        try:
+            dataframe[col] = dataframe[col].apply(str)
+            dataframe[col] = dataframe[col].apply(lambda x: remove_floating_part(x))
+        except:
+            for cpt in range(len(dataframe.index)):
+                cpt_index = dataframe.index[cpt]
+                np_value = dataframe.at[cpt_index, col]
+                py_convert = convert_dataframe_scalar(np_value)
+                if py_convert[0]:
+                    cell_content = py_convert[1]
+                    cell_content = str(cell_content)
+                    if cell_content.isdigit():
+                        cell_content = int(cell_content)
+                        dataframe.at[cpt_index, col] = cell_content
+                    else:
+                        dataframe.at[cpt_index, col] = remove_floating_part(cell_content)
+                else:
+                    dataframe.at[cpt_index, col] = ""
+    return dataframe
+
+def convert_dataframe_scalar(np_value):
+    try:
+        if np_value != "":
+            try:
+                py_value = np_value.encode('utf-8').strip()
+            except:
+                try:
+                    py_value = np.asscalar(np_value)
+                except:
+                    return [False, np_value, "Failed"]
+            return [True, py_value]
+        else:
+            return [False, np_value, "Empty"]
+    except:
+        return [False, np_value, "Empty"]
+
+def remove_floating_part(value):
+    num_sep = [",", "."]
+    for item in num_sep:
+        if item in value:
+            pos = value.find(item)
+            return int(value[:pos])
+    if isinstance(value, basestring):
+        if value.lower() == "nan":
+            return ""
+    return value
+
+def import_df_to_DB(df, table, file_name_prefix, comment, connection, cursor):
+    csv_columns = list(df)
+    file_name = create_file_name(file_name_prefix, table, len(df.index),
+                                 header = csv_columns, comment = comment)
+    path = path_containing_all_csv
+    folder = table
+    csv_file = write_to_csv(df, path, folder, file_name)
+
+    if csv_file:
+        import_csv_to_DB(csv_file, table, csv_columns, connection, cursor)
+
+        """csv_reader = codecs.open(csv_file, 'r', encoding='utf-8')
+        cursor.copy_from(file = csv_reader, table = table,
+                         sep = ";", null = "", columns = csv_columns)
+        connection.commit()
+        print "OK : csv imported to DB in table : %s" % table"""
+
+def create_file_name(fichier_num, table, length, header = "", comment = ""):
+    file_name = str(fichier_num) + "_"
+    if header != "":
+        field_description = "["
+        for field in header:
+            field_description = field_description + str(field) + ","
+        field_description = field_description[:len(field_description)-1] + "]"
+        file_name = file_name + str(field_description) + "_"
+    if comment != "":
+        file_name = file_name + str(comment) + "_"
+    k = str(int(length / 1000)) + "k"
+    file_name = file_name + str(table) + "_" + k + ".csv"
+    return file_name
+
+def write_to_csv(dataframe, path, folder, file_name, header = False, na_rep = 'NULL'):
+    csv_file = path + "/" + folder + "/" + file_name
+    write_cols = list(dataframe.columns)
+    if len(dataframe.index) > 0:
+        if 'mail_id' in write_cols:
+            dataframe = dataframe[pd.notnull(dataframe['mail_id'])]
+        for col in write_cols:
+            if "id" in col:
+                dataframe = convert_dataframe_column_to_integer(dataframe, col)
+            elif col == "score":
+                dataframe = convert_dataframe_column_to_integer(dataframe, col)
+            elif "md5" in col:
+                pass
+            elif "birth" in col:
+                pass
+            elif "tel" in col:
+                pass
+            elif "cp" in col:
+                dataframe[col] = dataframe[col].apply(str)
+                dataframe[col] = dataframe[col].apply(lambda x: remove_floating_part(x))
+                #dataframe[col] = dataframe[col].apply(lambda x: remove_None(x))
+            elif "civilite" in col:
+                dataframe[col] = dataframe[col].apply(lambda x: remove_floating_part(x))
+                #dataframe[col] = dataframe[col].apply(lambda x: remove_NaN(x))
+            else:
+                try:
+                    dataframe[col] = dataframe[col].str.replace("'", "\\'")
+                except:
+                    try:
+                        dataframe.loc[col] = dataframe[col].str.replace("'", "\\'")
+                    except:
+                        for cpt in range(len(dataframe.index)):
+                            cpt_index = dataframe.index[cpt]
+                            np_value = dataframe.at[cpt_index, col]
+                            py_convert = convert_dataframe_scalar(np_value)
+                            if py_convert[0]:
+                                cell_content = py_convert[1]
+                                try:
+                                    cell_content = cell_content.replace("'", "\\'")
+                                except:
+                                    pass
+                                dataframe.at[cpt_index, col] = cell_content
+                            else:
+                                dataframe.at[cpt_index, col] = ""
+        try:
+            dataframe.to_csv(csv_file, sep = ";", cols = write_cols, \
+                             header = header, index = False, \
+                             na_rep = na_rep, encoding = 'utf-8')
+            message = "OK : Dataframe written to csv : " + csv_file
+            return csv_file
+        except:
+            message = "Failed to write dataframe to csv. Will retry line by line with Python standard function."
+            e = sys.exc_info()
+            for item in e:
+                message = str(item)
+            #line_stack = []
+            with codecs.open(csv_file, 'w', 'utf-8', 'ignore') as csv:
+                for cpt_line in range(len(dataframe.index)):
+                    cpt_index = dataframe.index[cpt_line]
+                    try:
+                        line_str = ";".join(str(dataframe.at[cpt_index, col]) for col in write_cols)
+                        try:
+                            csv.write(line_str + '\n')
+                        except:
+                            message = "Pb. with line %s. Will pass to next line." % str(cpt_line)
+                            e = sys.exc_info()
+                            for item in e:
+                                message = str(item)
+                        #line_stack.append(line_str)
+                    except:
+                        message = "Pb. with line %s. Will pass to next line." % str(cpt_line)
+                        e = sys.exc_info()
+                        for item in e:
+                            message = str(item)
+                #csv.writelines(line_stack)
+            message = "OK : Dataframe written to csv : " + csv_file
+            return csv_file
+    else:
+        message = "Failed to write dataframe to csv. Empty dataframe passed to write_to_csv() function."
+        return ""
+
+def import_csv_to_DB(path_to_csv, table, columns, connection, cursor, sep = ";", encoding = 'utf-8', fix_duplicates = False):
+    if fix_duplicates:
+        df = pd.read_csv(path_to_csv, sep = str(sep), encoding = encoding)
+        df.drop_duplicates(inplace = True)
+        broken_path = path_to_csv.split("/")
+        path_res = write_to_csv(df, "/".join(broken_path[:-2]), broken_path[-2], broken_path[-1])
+        if path_res:
+            import_csv_to_DB(path_res, table, columns, connection, cursor, sep, encoding, False)
+    csv_reader = codecs.open(path_to_csv, 'r', encoding=encoding)
+    cursor.copy_from(file = csv_reader, table = table,
+                     sep = sep, null = "", columns = columns)
+    connection.commit()
+    print "OK : csv imported to DB in table : %s" % table
 
 def convert_args_to_list(arg, arg_type = None):
     arg_list = []
@@ -1001,3 +1283,62 @@ def hash_to_md5(string):
     string = str(string).lower().encode()
     hash_object = hashlib.md5(string)
     return hash_object.hexdigest()
+
+def age_range_4wards(age):
+    limits = [12,17,24,29,34,39,44,49,54,59,64,70]
+    for cpt in range(len(limits)):
+        if age <= limits[cpt]: return cpt
+    return len(limits)
+
+def new_time(start, end, prop, day_light = True):
+    # creates a time somewhere in btw. start & end time
+    # day_light option makes sure the hour is btw. 6 and 23
+    ptime = start + prop * (end - start)
+    if day_light:
+        time_as_tuple = time.localtime(ptime)
+        h = time_as_tuple[3]
+        if h < 6:
+            time_as_list = list(time_as_tuple)
+            time_as_list[3] = random.randint(6,23)
+            ptime = time.mktime(tuple(time_as_list))
+    return ptime
+
+def list_of_random_dates(start, end, format, number, day_light = True):
+    # generates a list of n random dates btw. start & end dates at a given str format
+    # ex. list_of_random_dates("1/1/2008 1:30 PM", "1/1/2009 4:50 AM", '%m/%d/%Y %I:%M %p', 1000)
+    stime = time.mktime(time.strptime(start, format))
+    etime = time.mktime(time.strptime(end, format))
+    random_dates = []
+    for cpt_dates in range(number):
+        prop = random.random()
+        random_time = new_time(stime, etime, prop, day_light)
+        string_date = time.strftime(format, time.localtime(random_time))
+        random_dates.append(string_date)
+    return random_dates
+
+def test_url(url):
+    if not "http://" in url: url = "http://" + url
+    request = requests.get(str(url))
+    if request.status_code == 200:
+        return True
+    else:
+        return False
+
+def convert_to_international_format(sms):
+    try:
+        sms = str(sms)
+    except:
+        return False
+    sms = sms.replace(" ", "")
+    if sms[:3] == '+33' and len(sms) == 12:
+        return sms
+    else:
+        if sms[:2] in ['06', '07'] and len(sms) == 10:
+            return "+33" + sms[1:]
+        elif sms[0] in ['6', '7'] and len(sms) == 9:
+            return "+33" + sms
+    return False
+
+def convert_list_to_international_format(sms_list):
+    if not isinstance(sms_list, list): sms_list = [sms_list]
+    return [convert_to_international_format(sms) for sms in sms_list]

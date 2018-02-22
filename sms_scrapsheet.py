@@ -3,28 +3,157 @@ from sms_object_toolbox import *
 import json
 import pprint
 
+# yakare -- Boucher Carcassone & Limoux -- 21 fev
+"""
+user = 'david_test'
+client = 'argus'
+#geo_dict_with_limit = {'ville':{'carcassonne':3397}}
+geo_dict_with_limit = {'ville':{'limoux':10}}
+sender = 'Renault'
+#message = 'RENAULT MINUTE CARCASSONNE : Votre bilan hiver offert et -25% de remise sur forfaits freinage, batterie et balais essuie glaces. Info au 0468777770'
+message = 'RENAULT MINUTE LIMOUX : Votre bilan hiver offert et -25% de remise sur forfaits freinage, batterie et balais essuie glaces. Info au 0468747686'
+#bat_list = ['06 38 66 04 99', '06 48 00 33 38']
+bat_list = ['0680835196']
+send_date = "2018-02-22 10:30:00"
+
+s = SMSQuery()
+s.select_multi(geo_dict_with_limit = geo_dict_with_limit, user = user, client_name = client)
+s.campaign.create_in_router(sender, message, send_date, bat_list)
+
+#c = SMSCampaign()
+#c.create_in_router(sender, message, send_date, bat_list)
+"""
+
+# alexandra -- budget 300€ -- fev.12
+"""
+geo_dict = {'cp':[10000,89000,89100,21000,21200,45500,77240,77210,77400,91100,51100]}
+s = SMSQuery()
+df = s.count_multi(geo_dict = geo_dict, age_max=65, age_min=30)
+print df
+s.store_in_db('david', 2)
+"""
+
+folder = "/home/david/sms/alexandra/amplitude_12-02-18"
+file = "amplitude_easyVO_15-02-18.csv"
+
+s = SMSRouterStats(folder, file, write_to_csv=True, csv_folder=folder)
+s.remove_weird_status()
+s.stats_df = s.adjust_sent_number(s.router_df, 2142)
+s.stats_df = s.adjust_status_distribution(s.stats_df, amplitude = 0.1)
+s.add_age_range()
+s.get_stats_alexandra()
+
+# test webservice -- in progress
+""" xxx
+s = SMSQuery()
+print s.query_name
+#s.get_from_db(7)
+#s.store_in_db()
+#s.store_campaign_in_db()
+
+#s = SMSQuery()
+s.select_multi(None, 10, ['sms', 'cp', 'gender', 'age'], geo_dict = {'cp':[75003]})
+
+#print df
+"""
+#pt = PrimoTextoAPI()
+#pt.create_campaign("test_python", "cliquez-ici:${rich_message}", "DavidX", url="http://mailreach.net",
+#                   send_date="2018-02-20 16:20:00")
+#pt.send_bat(['+33680835196'])
+"""
+c = SMSCampaign(17)
+c.retrieve_data_from_db()
+#print c.query.client.name
+c.create_in_router("David", "cliquez ici : [[mailreach.net]]")
+"""
+
+
+# test script to refresh materialzed view
+"""
+conn = pg.get_connection()
+cur = conn.cursor()
+cur.execute("REFRESH MATERIALIZED VIEW %s;" % "all_sms")
+conn.commit()
+conn.close()"""
+
+# alexandra -- dpt de ile-de-france -- fev.12
+"""
+geo_dict = {'dpt':[75,78,91,92,93,94,95]}
+s = SMSQuery()
+df = s.count_multi(geo_dict = geo_dict)
+print df """
+
+# manip Simone
+""" xxx
+folder = "/home/david/fichiers/simone"
+file = "export_italiens_suite_sms.csv"
+#df = pd.read_csv(folder + "/" + file, header = None)
+#mail = df.iloc[:,0]
+#mail.to_csv(folder + "/mails_simone_suite.csv", index = False)
+conn = pg.get_connection()
+
+df = pd.read_csv(folder + "/export_italiens_sms.csv", header = ['mail','id','mail_id','prenom','nom','civilite','birth','cp','ville'])
+show_df(df)
+conn.close()
+"""
+
 # yakare comptage 25-01-18
-""" xxx """
-geo_dict = {'cp':['75001'],'ville':['bordeaux','nantes'],'dpt':['92'],'region':['ile-de-france']}
-geo_dict = {'cp':['75001']}
-geo_dict = {'ville':['Cenon','Floirac','Tresses','Lormont','Sainte-Eulalie','Bassens','Carbon-Blanc','Bordeaux Bastide','Bacalan','Artigues-près-Bordeaux','Yvrac','Bouliac','Bordeaux Lac']}
+""" xxx
+#geo_dict = {'cp':['75001'],'ville':['bordeaux','nantes'],'dpt':['92'],'region':['ile-de-france']}
+#geo_dict = {'cp':['75001','75003']}
+#geo_dict = {'ville':['Cenon','Floirac','Tresses','Lormont','Sainte-Eulalie','Bassens','Carbon-Blanc','Bordeaux Bastide','Bacalan','Artigues-près-Bordeaux','Yvrac','Bouliac','Bordeaux Lac']}
 #geo_dict = {'ville':['Sainte-Eulalie']}
 
-#geo_dict = {
-#    'cp':[49000,49130,49240,49124,49130,49610,49080,49070,49800,49460,49610,49480,49190]}
-age_min = None
-age_max = None
+geo_dict = {
+    'cp':[49000,49130,49240,49124,49130,49610,49080,49070,49800,49460,49610,49480,49190]}
+age_min = 30
+age_max = 65
 
-s = SMSQuery(client='yakare')
+s = SMSQuery()
 #s.where(geo_criteria='cp', geo_list=['77240','67100','49000','86440','26000'],
 #        age_min = 25, age_max = 65)
 #s.where(geo_criteria='cp', geo_list=['77','67','49','86','26'], age_min = 25, age_max = 65)
 #s.where(geo_criteria='cp', geo_list=['28', '27'], age_min = 30, age_max = 65)
 print str(geo_dict)
-print s.count_multi(geo_dict = geo_dict, age_min = age_min, age_max = age_max)
+print s.select_multi(global_limit = 1000, geo_dict = geo_dict, age_min = age_min, age_max = age_max,
+                    client_id = 1, user = 'david')
+#s.log_in_db('david', 1)
+
+#s.get_from_db(6)
+#print s.df_result
+"""
 
 
+# Export SMS pour regie
+# voir fichier scrapsheet habituel dans projet DB_Export
 
+
+# Import HLRLookup allfiles in DB
+"""
+folder = "/home/david/fichiers/sms/hlr/files"
+files = []
+df_list = []
+connection = pg.get_connection()
+#sms_df = load_query(connection, "SELECT id AS sms_id, sms_md5 FROM sms")
+for (dirpath, dirnames, filenames) in os.walk(folder):
+    files.extend(filenames)
+for file in files:
+    h = HLR()
+    h.read_file(folder, file)
+    valid = h.clean_dataframe()
+    #h.format_dataframe_for_import_in_db()
+    h.import_dataframe_in_db()
+    if valid:
+        df_list.append(h.res_df)
+    #if valid:
+    #    os.rename(folder + "/" + file, folder + "/OK_" + file)
+    #else:
+    #    os.rename(folder + "/" + file, folder + "/PB_" + file)
+
+#big_df = pd.concat(df_list)
+#show_df(big_df)
+#big_df.to_csv(folder+"/bigdf.csv", index = None)
+"""
 
 # stats pauline jennifer 10-01-18
 """ xxx 
