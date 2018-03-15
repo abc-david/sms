@@ -3,6 +3,106 @@ from sms_object_toolbox import *
 import json
 import pprint
 
+gd = {'cp':['06600','06160','06790','06810','06310','06240','06390','06390','06410','06440','06830','06800','06340','06320','06510','06670','06390','06390','06670','06390','06340','06360','06950','06510','06480','06610','06550','06420','06340','06320','06110','06650','06210','06250','06000','06100','06200','06300','06670','06230','06700','06670','06570','06440','06690','06560','06220','06140','06270']}
+gd = {'dpt': ['06']}
+s = SMSQuery(user = 'david')
+df = s.count_multi(geo_dict = gd, age_min = 30)
+print df[:]
+
+# yakare -- 14-03-18
+"""
+cl = 'test-client'
+us = 'test-python'
+amin = 20
+amax = 65
+#gd = {'cp':[11300,11000]}
+gdl = {'cp':{31120:1838, 31600:3476, 31860:822, 31810:360}}
+gl = 50
+#gdl = {'cp':{11000:3000}}
+#km = [10,20]
+#il = [1,2]
+sender = "TEST MODIF"
+message = "La GRANDE OCCASION à Roquettes : un large choix de véhicules d'occasions jusqu'au 18 mars inclus au Gge BOUSCATEL. Plus d'info: https://goo.gl/Pfv2Vg"
+message = "this is a test"
+#bat = ['0638660499', '0675490804']
+bat = ['0680835196']
+send_date = "14/03/18 16:00"
+
+s = SMSQuery()
+#s.count_multi(geo_dict = gd, user = us, client_name = cl,
+#              age_min = amin, age_max = amax)
+
+s.select_multi(geo_dict_with_limit = gdl, user = us, client_name = cl, age_min = amin, age_max = amax, global_limit = gl)
+s.campaign.create_in_router(sender, message, send_date, bat)
+
+#c = SMSCampaign(id = 48)
+#c.create_in_router(sender, message, send_date, bat) """
+
+# alexandra -- StMaur -- 13 mars 18
+"""
+cl = 'alexandra'
+us = 'david'
+gd = {'ville':['St Maur', 'Maisons Alfort', 'St Mande', 'Joinville', 'Vincennes', 'Nogent Sur Marne']}
+gl = 9090
+s = SMSQuery(id = 141)
+#df = s.count_multi(geo_dict = gd, user = us, client_name = cl)
+#print df
+s.select_multi(global_limit=gl) """
+
+# yakare -- Limoux -- 8 mars 18
+""" xxx
+cl = 'argus'
+us = 'david'
+amin = None #25
+amax = None #65
+#gd = {'cp':[11300,11000]}
+gdl = {'cp':{11300:1000}}
+#gdl = {'cp':{11000:3000}}
+km = [10,20]
+il = [1,2]
+sender = "Renault"
+message = "En MARS c'est le mois des INRATABLES chez Renault occasions LIMOUX ! Ex : CLIO Business 2017 à partir de 129€/mois. Info au 0679092009"
+#sender = "Renault"
+#message = "En MARS c'est le mois des INRATABLES chez Renault occasions CARCASSONNE ! Ex : CAPTUR INTENS DIESEL 90 à partir de 199€/mois. Info au 0676699235"
+
+#bat_list = ['0638660499', '0648003338','0679092009', '0676699235']
+#bat_list = ['0648003338', '0638660499']
+bat_list = ['0680835196']
+send_date = "15 mars 2018 10:30"
+s = SMSQuery()
+#s.count_multi(geo_dict = gd, user = us, client_name = cl, interest_list = il, proxi_list= km,
+#              age_min = amin, age_max = amax)
+s.select_multi(geo_dict_with_limit = gdl, user = us, client_name = cl)
+s.campaign.create_in_router(sender, message, send_date, bat_list)
+
+#c = SMSCampaign(id = 43)
+#c.create_in_router(sender, message, send_date, bat_list)
+"""
+
+# yakare -- Peyrot -- 8 mars 18
+"""
+cl = 'argus'
+us = 'python'
+gd = {'cp':[11400]}
+gdl = {'cp':{11400:10}}
+km = [10,30]
+il = [1]
+sender = "Renault"
+message = "En MARS c’est le mois des INRATABLES chez Renault occasions CASTELNAUDARY ! Ex : CLIO Business 2017 à partir de 129€/mois. Info au 0648003347"
+send_date = "8 mars 2018 10:00"
+#bat_list = ['0638660499', '06 48 00 33 38']
+bat_list = ['+33680835196']
+xtra_recipient = '0648003347'
+
+s = SMSQuery(id = 107)
+#s.count_multi(geo_dict = gd, user = us, client_name = cl, interest_list = il, proxi_list= km)
+#s.select_multi(geo_dict_with_limit = gdl, user = us, client_name = cl)
+#s.campaign.create_in_router(sender, message, send_date, bat_list)
+
+c = SMSCampaign(id = 36)
+c.create_in_router("Renault DAX", message, send_date, bat_list)
+"""
+
 # yakare -- Boucher Carcassone & Limoux -- 21 fev
 """
 user = 'david_test'
@@ -33,15 +133,20 @@ print df
 s.store_in_db('david', 2)
 """
 
+"""
 folder = "/home/david/sms/alexandra/amplitude_12-02-18"
 file = "amplitude_easyVO_15-02-18.csv"
 
-s = SMSRouterStats(folder, file, write_to_csv=True, csv_folder=folder)
+s = SMSRouterStats(folder, file, write_to_csv=True, csv_folder=folder, csv_file = 'stats.csv')
 s.remove_weird_status()
 s.stats_df = s.adjust_sent_number(s.router_df, 2142)
 s.stats_df = s.adjust_status_distribution(s.stats_df, amplitude = 0.1)
+s.get_default_ref_df()
+s.append_ref_df()
+s.adjust_age()
 s.add_age_range()
 s.get_stats_alexandra()
+"""
 
 # test webservice -- in progress
 """ xxx
@@ -104,25 +209,26 @@ conn.close()
 #geo_dict = {'ville':['Cenon','Floirac','Tresses','Lormont','Sainte-Eulalie','Bassens','Carbon-Blanc','Bordeaux Bastide','Bacalan','Artigues-près-Bordeaux','Yvrac','Bouliac','Bordeaux Lac']}
 #geo_dict = {'ville':['Sainte-Eulalie']}
 
-geo_dict = {
-    'cp':[49000,49130,49240,49124,49130,49610,49080,49070,49800,49460,49610,49480,49190]}
-age_min = 30
-age_max = 65
+#geo_dict = {
+#    'cp':[49000,49130,49240,49124,49130,49610,49080,49070,49800,49460,49610,49480,49190]}
+geo_dict = {'dpt':[49]}
+age_min = 20
+age_max = 75
 
 s = SMSQuery()
 #s.where(geo_criteria='cp', geo_list=['77240','67100','49000','86440','26000'],
 #        age_min = 25, age_max = 65)
 #s.where(geo_criteria='cp', geo_list=['77','67','49','86','26'], age_min = 25, age_max = 65)
 #s.where(geo_criteria='cp', geo_list=['28', '27'], age_min = 30, age_max = 65)
-print str(geo_dict)
-print s.select_multi(global_limit = 1000, geo_dict = geo_dict, age_min = age_min, age_max = age_max,
+#print str(geo_dict)
+print s.select_multi(global_limit = 19429, geo_dict = geo_dict, age_min = age_min, age_max = age_max,
                     client_id = 1, user = 'david')
 #s.log_in_db('david', 1)
 
 #s.get_from_db(6)
 #print s.df_result
-"""
 
+"""
 
 # Export SMS pour regie
 # voir fichier scrapsheet habituel dans projet DB_Export

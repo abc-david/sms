@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 from pandas.io import sql
 import json
-import tqdm
 import psycopg2
 import psycopg2.pool
 import random
@@ -36,7 +35,7 @@ class ThreadReturn(Thread):
         Thread.join(self)
         return self._return
 
-class PgSQL(object):
+class SMSPgSQL(object):
     db_dict =  {'dbname' : "prod", #"postgres"
                 'user' : "postgres",
                 'host' : "163.172.19.9", #"163.172.19.9",
@@ -57,7 +56,7 @@ class PgSQL(object):
         connect_token = "dbname='" + self.db_dict['dbname'] + "' user='" + self.db_dict['user'] + \
                         "' host='" + self.db_dict['host'] + "' password='" + self.db_dict['pass'] + "'"
         try:
-            conn_pool = psycopg2.pool.ThreadedConnectionPool(1,100, connect_token)
+            conn_pool = psycopg2.pool.ThreadedConnectionPool(1, 1000, connect_token)
         except:
             e = sys.exc_info()
             for item in e:
@@ -114,7 +113,7 @@ class PgSQL(object):
 
 # Initialize on module import
 #with Lock() as connection_pool_lock:
-pg = PgSQL()
+pg = SMSPgSQL()
 
 class CopyToQuery(object):
 
@@ -203,7 +202,6 @@ class CopyToQuery(object):
 
     def __del__(self):
         if self.close_connection: self.connection.close()
-
 
 class Query(object):
     def __init__(self, cursor, connection, query_dict, query_name, args, return_result = True, multi_result = False):
@@ -463,7 +461,7 @@ class SMSClient(object):
                   'select_client_by_id' : 'SELECT * FROM sms_client WHERE id = %s'}
 
     def __init__(self, connection = None, cursor = None, name = None, create_date = None, parent_id = None, contact = None,
-                 admin_contact = None, fid_cpm_price = None, acg_cpm_price = None, sms_referral_id = None, created_by = None):
+                 admin_contact = None, fid_cpm_price = None, acq_cpm_price = None, sms_referral_id = None, created_by = None):
         self.cursor = cursor
         self.connection = connection
         if not self.connection:
@@ -479,7 +477,7 @@ class SMSClient(object):
         self.contact = contact
         self.admin_contact = admin_contact
         self.fid_cpm_price = fid_cpm_price
-        self.acg_cpm_price = acg_cpm_price
+        self.acq_cpm_price = acq_cpm_price
         self.sms_referral_id = sms_referral_id
         self.created_by = created_by
 
@@ -503,7 +501,7 @@ class SMSClient(object):
             return False
         if res:
             self.id, self.name, self.create_date, self.parent_id, self.contact, self.admin_contact, self.fid_cpm_price, \
-            self.acg_cpm_price, self.sms_referral_id, self.created_by = res
+            self.acq_cpm_price, self.sms_referral_id, self.created_by = res
             return True
 
     def __del__(self):
@@ -915,13 +913,13 @@ class SMSQuery(object):
 
     query_dict = {'insert_query' : "INSERT INTO sms_api_query " + \
                                    "(user_name, create_date, client_id, geo_dict, geo_criteria, geo_list, age_min, age_max, civi, " + \
-                                   "interest_list, proxi_list, df_result, query_name) VALUES " + \
-                                   "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                                   "interest_list, proxi_list, df_result, query_name, global_limit, geo_dict_with_limit) VALUES " + \
+                                   "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                   'select_query' : "SELECT user_name, create_date, client_id, geo_dict, geo_criteria, geo_list, age_min, age_max, civi, " + \
-                                   "interest_list, proxi_list, df_result, query_name FROM sms_api_query WHERE id = %s",
+                                   "interest_list, proxi_list, df_result, query_name, global_limit, geo_dict_with_limit FROM sms_api_query WHERE id = %s",
                   'insert_campaign' : "INSERT INTO sms_api_campaign (client_id, create_date, query_id, " + \
-                                      "campaign_name, user_name, volume_client, volume_sent) VALUES " + \
-                                      "(%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                                      "campaign_name, user_name, volume_client, volume_sent, billing_price) VALUES " + \
+                                      "(%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                   'update_campaign' : "UPDATE sms_api_campaign SET volume_sent = %s, router_list_id = %s " + \
                                       "WHERE id = %s",
                   'select_related_campaign' : "SELECT id FROM sms_api_campaign WHERE query_id = '%s' ORDER DESC LIMIT 1"}
@@ -993,8 +991,19 @@ class SMSQuery(object):
         self.client_id = client_id
         self.client_name = client_name
         self.query_name = None
+        self.campaign_summary = None
         self.retrieve_data_from_id()
         self.retrieve_client()
+
+    def eval_geo(self):
+        if self.geo_criteria in ['cp', 'zip', 'zip_code'] or self.geo_criteria == None:
+            self.cp_list = convert_args_to_list(self.geo_list, 'cp')
+        elif self.geo_criteria in ['ville', 'city']:
+            self.city_list = convert_args_to_list(self.geo_list)
+        elif self.geo_criteria in ['dpt', 'departement']:
+            self.cp_list = convert_args_to_list(self.geo_list)
+        elif self.geo_criteria in ['region']:
+            self.region_list = convert_args_to_list(self.geo_list)
 
     def where(self, geo_criteria = None, geo_list = None, age_min = None, age_max = None, civi = None, cp_precision = 5,
               proxi = None, interest = None, sms_list = None, city_cp_strict = True, sql_city_list = None):
@@ -1174,150 +1183,177 @@ class SMSQuery(object):
         else:
             self.where_clause = ""
 
-    def count_multi(self, geo_dict = None, geo_criteria = None, geo_list = None, cp_precision = 5,
-                    age_min = None, age_max = None, civi = None, interest_list = None, proxi_list = None,
-                    user = None, client_id = None, client_name = None):
-        if interest_list: self.interest_list = interest_list
-        if proxi_list: self.proxi_list = proxi_list
-        if geo_dict: self.geo_dict = geo_dict
-        if geo_criteria: self.geo_criteria = geo_criteria
-        if geo_list: self.geo_list = geo_list
-        if cp_precision: self.cp_precision = cp_precision
-        if age_min: self.age_min = age_min
-        if age_max: self.age_max = age_max
-        if civi: self.civi = civi
+    def print_query(self):
+        print self.select_clause
+        print self.from_clause
+        if self.where_clause: print self.where_clause
+        if self.groupby_clause: print self.groupby_clause
+        if self.limit_clause: print self.limit_clause
 
-        self.retrieve_client(client_id, client_name)
-        self.create_query_name(user, client_id, client_name)
-
-        if geo_dict:
-            threads = []
-            for geo_criteria, geo_list in self.geo_dict.iteritems():
-                for geo_item in geo_list:
-                    t = ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item),
-                                    target = sms_query_count_single_geo_item,
-                                    args = (geo_criteria, geo_item, cp_precision, age_min, age_max, civi))
-                    threads.append(t)
-
+    def create_query(self):
+        if self.where_clause == "":
+            self.query = "".join([self.select_clause, self.from_clause, self.groupby_clause]) + ";"
         else:
-            threads = [ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item),
-                                    target = sms_query_count_single_geo_item,
-                                    args = (geo_criteria, geo_item, cp_precision, age_min, age_max, civi))
-                       for geo_item in geo_list]
-        for t in threads:
-            t.start()
+            self.query = "".join([self.select_clause, self.from_clause, self.where_clause, self.groupby_clause]) + ";"
+        if self.limit_clause: self.query = self.query.replace(";", " " + self.limit_clause + ";")
+        return self.query
+
+    def create_region_cp_df(self, id_table = 'postal_region_cp', strict = False):
+        usual_region_dict = {'idf' : 'Ile-de-France', 'IDF' : 'Ile-de-France'}
+        if self.region_list:
+            if not isinstance(self.region_list, list):
+                self.region_list = [self.region_list]
+            self.region_list = [usual_region_dict[region] if region in usual_region_dict.keys() else region for region in self.region_list]
+            self.region_list = flatten_list(self.region_list)
+            if len(self.region_list) > 1:
+                if strict:
+                    q = "SELECT DISTINCT ON (id.dpt) id.region, id.dpt AS cp FROM %s AS id WHERE UPPER(id.region) IN (%s) GROUP BY id.dpt, id.region" % \
+                        (id_table, ", ".join(["'" + format_region_for_cp_retrieval(region, id_table) + "'" for region in self.region_list]))
+                else:
+                    q = "SELECT DISTINCT ON (id.dpt) id.region, id.dpt AS cp FROM %s AS id WHERE UPPER(id.region) LIKE ANY (ARRAY[%s]) GROUP BY id.dpt, id.region" % \
+                        (id_table, ", ".join(["'" + format_region_for_cp_retrieval(region, id_table) + "%'" for region in self.region_list]))
+            else:
+                q = "SELECT DISTINCT ON (id.dpt) id.region, id.dpt AS cp FROM %s AS id WHERE UPPER(id.region) = '%s' GROUP BY id.dpt, id.region" % \
+                    (id_table, format_region_for_cp_retrieval(self.region_list[0], id_table))
+
+            if self.debug:
+                print "--- Querying %s table to get corresponding cp ---" % str(id_table)
+                print q
+            self.region_cp_df = pd.read_sql(q, self.connection)
+            self.region_cp_df = self.region_cp_df.drop_duplicates()
+            self.region_cp_list = list(self.region_cp_df.cp.unique())
+            if self.debug:
+                #show_group_by_df(df, 'ville')
+                show_df(self.region_cp_df)
+                print "%s region --> %s records for %s distinct cp" % (str(len(self.region_list)),
+                                                                       str(len(self.region_cp_df.index)),
+                                                                       str(len(self.region_cp_list)))
+                #print cp_list
+            return (self.region_cp_list, self.region_cp_df)
+        else:
+            return False
+
+    def create_city_cp_df(self, id_table = 'postal_ville_cp', strict = True):
+        usual_city_dict = {'Paris' : ['Paris ' + digit_to_str(arrdt) for arrdt in range(1,21)],
+                       'Neuilly' : 'Neuilly sur Seine',
+                       'Boulogne' : 'Boulogne Billancourt',
+                       'Levallois' : 'Levallois Perret',
+                       'Velizy' : 'Velizy Villacoublay',
+                       'Villiers' : 'Villiers le Bel',
+                       'Reuil' : 'Reuil Malmaison'}
+        if self.city_list:
+            if not isinstance(self.city_list, list):
+                self.city_list = [self.city_list]
+            self.city_list = [usual_city_dict[city] if city in usual_city_dict.keys() else city for city in self.city_list]
+            self.city_list = flatten_list(self.city_list)
+            if len(self.city_list) > 1:
+                if strict:
+                    q = "SELECT DISTINCT ON (id.cp) id.ville, id.cp FROM %s AS id WHERE id.ville IN (%s) GROUP BY id.cp, id.ville" % \
+                        (id_table, ", ".join(["'" + format_city_for_cp_retrieval(city, id_table) + "'" for city in self.city_list]))
+                else:
+                    q = "SELECT DISTINCT ON (id.cp) id.ville, id.cp FROM %s AS id WHERE id.ville LIKE ANY (ARRAY[%s]) GROUP BY id.cp, id.ville" % \
+                        (id_table, ", ".join(["'" + format_city_for_cp_retrieval(city, id_table) + "%'" for city in self.city_list]))
+            else:
+                q = "SELECT DISTINCT ON (id.cp)id.ville, id.cp FROM %s AS id WHERE id.ville = '%s' GROUP BY id.cp, id.ville" % \
+                    (id_table, format_city_for_cp_retrieval(self.city_list[0], id_table))
+
+            if self.debug:
+                print "--- Querying %s table to get corresponding cp ---" % str(id_table)
+                print q
+            self.city_cp_df = pd.read_sql(q, self.connection)
+            self.city_cp_df = self.city_cp_df.drop_duplicates()
+            self.city_cp_list = list(self.city_cp_df.cp.unique())
+            if self.debug:
+                #show_group_by_df(df, 'ville')
+                show_df(self.city_cp_df)
+                print "%s cities --> %s records for %s distinct cp" % (str(len(self.city_list)),
+                                                                       str(len(self.city_cp_df.index)), str(len(self.city_cp_list)))
+                #print cp_list
+                if len(self.city_cp_list) == 0: return False
+            return (self.city_cp_list, self.city_cp_df)
+        else:
+            return False
+
+    def create_cp_fix_df(self):
+        # when cp_precision in [3, 4], creates a df to mask existing cp with queried cp
+        #print self.cp_sql_dict
         data = []
-        for t in threads:
-            t_res = t.join()
-            if t_res:
-                data.append(t_res)
-        result = pd.DataFrame(data = data, columns = ['entity', 'name', 'nb_sms'])
-        if self.interest_list:
-            if not isinstance(self.interest_list, list): self.interest_list = [self.interest_list]
-            for interest_id in self.interest_list:
-                result = adjust_for_interest(result, interest_id, amplitude = 0.05, col_to_adjust = 'nb_sms', base = 1.2)
-        if self.proxi_list:
-            if not isinstance(self.proxi_list, list): self.proxi_list = [self.proxi_list]
-            for proxi in proxi_list:
-                result = adjust_for_proxi(result, proxi = proxi, amplitude = 0.05, col_to_adjust = 'nb_sms', base = 1.2)
-        show_df(result)
-        json_result = {}
-        json_result['columns'] = list(result)
-        json_result['values'] = result.values.tolist()
-        self.df_result = json.dumps(json_result)
-        self.store_in_db()
-        # return self.id <-- need to return self.id in the webservice's JSON
-        return result
+        two_digit = lambda x: '0' + str(x) if len(str(x)) == 1 else str(x)
+        for n_cp, cp_list in self.cp_sql_dict.iteritems():
+            for cp in cp_list:
+                cp_num = cp[1:-2]
+                for cp_param in self.cp_list:
+                    if cp_num == cp_param[:n_cp]:
+                        cp_show = str(cp_param)
+                    else:
+                        cp_show = str(cp_num) + ('0' * (5 - n_cp))
+                if n_cp == 4:
+                    for cpt in range(10):
+                        data.append([str(cp_show), str(cp_num) + str(cpt)])
+                elif n_cp == 3:
+                    for cpt in range(100):
+                        data.append([str(cp_show), str(cp_num) + two_digit(cpt)])
+        self.cp_fix_df = pd.DataFrame(data = data, columns = ['cp_show', 'cp'])
+        show_df(self.cp_fix_df)
+        return self.cp_fix_df
 
-    def select_multi(self, query_id = None, global_limit = None, select_field = ['sms','age','gender','cp'], hlr_lookup = True,
-                     geo_dict_with_limit = None, geo_dict = None, geo_criteria = None, geo_list = None, cp_precision = 5,
-                     age_min = None, age_max = None, civi = None, interest_list = None, proxi_list = None,
-                     user = None, client_id = None, client_name = None):
-        # Loads parameters
-        if global_limit: self.global_limit = int(global_limit)
-        if geo_dict_with_limit: self.geo_dict_with_limit = geo_dict_with_limit
-
-        # Priority given to query_id, in which case the parameters are retrieved from the DB
-        if query_id:
-            self.id = query_id
-            self.retrieve_data_from_id()
+    def create_geo_fix_df(self):
+        # geo_fix_df purpose is to transform whatever the query returns into what the user asked for in the first place
+        # checks if cp_fix_df was created in prior steps (ie. if cp_precision = 3 or = 4)
+        if self.cp_fix:
+            # in this case, other masking df need to be merged with cp_fix_df
+            if self.city_list:
+                # 'cp_show' column is replaced by 'ville' column
+                self.geo_fix = True
+                self.geo_fix_df = pd.merge(self.cp_fix_df,
+                                          self.city_cp_df.rename(columns = {'cp' : 'cp_show'}))
+            elif self.region_list:
+                pass
+            else:
+                self.geo_fix = True
+                self.geo_fix_df = self.cp_fix_df.copy(deep = True)
         else:
-            if interest_list: self.interest_list = interest_list
-            if proxi_list: self.proxi_list = proxi_list
-            if geo_dict: self.geo_dict = geo_dict
-            if geo_criteria: self.geo_criteria = geo_criteria
-            if geo_list: self.geo_list = geo_list
-            if cp_precision: self.cp_precision = cp_precision
-            if age_min: self.age_min = age_min
-            if age_max: self.age_max = age_max
-            if civi: self.civi = civi
+            # this case corresponds cp_precision = 2 ('dpt' case) or = 5 ('plain' five-digit cp)
+            if self.city_list:
+                # in this case, we need to transform cp into cities
+                self.geo_fix = True
+                self.geo_fix_df = self.city_cp_df.copy(deep = True)
+                if self.cp_precision == 2:
+                    # in this case, the query returns the first two-digit of the users' cp,
+                    # so we need to adapt geo_fix_df by creating a dpt column
+                    self.geo_fix_df['dpt'] = self.geo_fix_df['cp'].apply(lambda x: str(x)[:2])
+                    # we can drop the 'cp' column as it becomes uselss (given that when cp_precision = 2 only dpt are returned)
+                    self.geo_fix_df.drop('cp', axis = 1, inplace = True)
+                else:
+                    # in this case cp_precision = 5, so no need for extra modifications
+                    pass
+            elif self.region_list:
+                pass
+            else:
+                # no need to mask anything in this case
+                pass
 
-        self.retrieve_client(client_id, client_name)
-        self.create_query_name(user, client_id, client_name)
-
-        # Gets the selection with threading on each geo parameter
-        threads = []
-        # Case with limits given for each geo point
-        if self.geo_dict_with_limit:
-            for geo_criteria, geo_list_with_limit in self.geo_dict_with_limit.iteritems():
-                # Checks that geo_list_with_limit truly has limits specified
-                # In the case that it is a list (ie. no limits specified) : rebuilds a dict with all limits set to None
-                if isinstance(geo_list_with_limit, list):
-                    replacement_dict = {}
-                    for geo_list in geo_list_with_limit:
-                        replacement_dict[geo_list] = None
-                    geo_list_with_limit = replacement_dict
-                for geo_item, limit_item in geo_list_with_limit.iteritems():
-                    t = ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item) + "_" + (str(limit_item) if limit_item else "no-limit"),
-                                     target = sms_query_select_sample_geo_item,
-                                     args = (limit_item, geo_criteria, geo_item, 5, age_min, age_max, civi, select_field))
-                    threads.append(t)
-        # Case with no limit given for any geo pint (either a geo_dict, or a single (geo_criteria, geo_list) couple
-        # This would be typically the case of a SMSQuery() being called by its query_id, with a global_limit given by the client
-        elif self.geo_dict:
-            for geo_criteria, geo_list in self.geo_dict.iteritems():
-                for geo_item in geo_list:
-                    t = ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item) + "_" + str("no-limit"),
-                                     target = sms_query_select_sample_geo_item,
-                                     args = (None, geo_criteria, geo_item, 5, age_min, age_max, civi, select_field))
-                    threads.append(t)
-        else:
-            threads = [ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item) + "_" + str("no-limit"),
-                                     target = sms_query_select_sample_geo_item,
-                                     args = (None, geo_criteria, geo_item, 5, age_min, age_max, civi, select_field))
-                       for geo_item in geo_list]
-        # Running the treads
-        for t in threads:
-            t.start()
-        data = []
-        for t in threads:
-            t_res = t.join()
-            if t_res[0]:
-                df = t_res[1]
-                df['source'] = str(t.name)
-                data.append(df)
-        result = pd.concat(data)
-        if global_limit:
-            global_limit = enlarge_sample(global_limit)
-            result = sample_or_same(result, global_limit)
-        self.df = result
-        if hlr_lookup:
-            self.hlr_cleanup()
-        self.store_campaign_in_db()
-        self.store_sms_list_in_db()
-        if self.upload_to_router(list_name = self.query_name):
-            self.update_campaign_in_db()
+    def get_df(self):
+        self.create_query()
+        if not self.connection: self.get_connection()
+        if self.debug:
+            print "--- Resulting SQL query ---"
+            self.print_query()
+            print "--- Querying the DB (this may take up to a minute) ---"
+        self.df = pd.read_sql(self.query, self.connection)
+        self.create_geo_fix_df()
+        if self.geo_fix:
+            if 'cp' in list(self.df):
+                if self.debug:
+                    show_df(self.df)
+                    print "--- Masking geo results ---"
+                self.df = pd.merge(self.df, self.geo_fix_df, on = 'cp')
+                if self.cp_fix:
+                    if self.debug: print "--- Removing 'cp_show' column ---"
+                    self.df.drop('cp', axis = 1, inplace = True)
+                    self.df.rename(columns = {'cp_show' : 'cp'}, inplace = True)
+        if self.debug: show_df(self.df)
         return self.df
-
-    def eval_geo(self):
-        if self.geo_criteria in ['cp', 'zip', 'zip_code'] or self.geo_criteria == None:
-            self.cp_list = convert_args_to_list(self.geo_list, 'cp')
-        elif self.geo_criteria in ['ville', 'city']:
-            self.city_list = convert_args_to_list(self.geo_list)
-        elif self.geo_criteria in ['dpt', 'departement']:
-            self.cp_list = convert_args_to_list(self.geo_list)
-        elif self.geo_criteria in ['region']:
-            self.region_list = convert_args_to_list(self.geo_list)
 
     def select(self, select_field = None, limit = None, hlr_factor = 1.25, error_factor = 1.1):
         if select_field: self.select_field = select_field
@@ -1361,7 +1397,7 @@ class SMSQuery(object):
                 self.limit_clause = "LIMIT %s" % str(self.limit)
         self.get_df()
         return self.df
-        
+
     def select_sample(self, select_field = None, limit = None, hlr_factor = 1.25, error_factor = 1.1):
         if limit:
             limit = enlarge_sample(limit, hlr_factor = hlr_factor, error_factor = error_factor, debug = self.debug)
@@ -1474,177 +1510,166 @@ class SMSQuery(object):
         print self.df.groupby(fields).size()
         return self.df.groupby(fields).size().reset_index(name='counts')
 
-    def print_query(self):
-        print self.select_clause
-        print self.from_clause
-        if self.where_clause: print self.where_clause
-        if self.groupby_clause: print self.groupby_clause
-        if self.limit_clause: print self.limit_clause
+    def count_multi(self, geo_dict = None, geo_criteria = None, geo_list = None, cp_precision = 5,
+                    age_min = None, age_max = None, civi = None, interest_list = None, proxi_list = None,
+                    user = None, client_id = None, client_name = None):
+        if interest_list: self.interest_list = interest_list
+        if proxi_list: self.proxi_list = proxi_list
+        if geo_dict: self.geo_dict = geo_dict
+        if geo_criteria: self.geo_criteria = geo_criteria
+        if geo_list: self.geo_list = geo_list
+        if cp_precision: self.cp_precision = cp_precision
+        if age_min: self.age_min = age_min
+        if age_max: self.age_max = age_max
+        if civi: self.civi = civi
+        if user: self.user_name = user
 
-    def create_query(self):
-        if self.where_clause == "":
-            self.query = "".join([self.select_clause, self.from_clause, self.groupby_clause]) + ";"
+        self.retrieve_client(client_id, client_name)
+        self.create_query_name(user, client_id, client_name)
+
+        if geo_dict:
+            threads = []
+            for geo_criteria, geo_list in self.geo_dict.iteritems():
+                for geo_item in geo_list:
+                    t = ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item),
+                                    target = sms_query_count_single_geo_item,
+                                    args = (geo_criteria, geo_item, cp_precision, age_min, age_max, civi))
+                    threads.append(t)
+
         else:
-            self.query = "".join([self.select_clause, self.from_clause, self.where_clause, self.groupby_clause]) + ";"
-        if self.limit_clause: self.query = self.query.replace(";", " " + self.limit_clause + ";")
-        return self.query
-
-    def create_region_cp_df(self, id_table = 'postal_region_cp', strict = False):
-        usual_region_dict = {'idf' : 'Ile-de-France', 'IDF' : 'Ile-de-France'}
-        if self.region_list:
-            if not isinstance(self.region_list, list):
-                self.region_list = [self.region_list]
-            self.region_list = [usual_region_dict[region] if region in usual_region_dict.keys() else region for region in self.region_list]
-            self.region_list = flatten_list(self.region_list)
-            if len(self.region_list) > 1:
-                if strict:
-                    q = "SELECT DISTINCT ON (id.dpt) id.region, id.dpt AS cp FROM %s AS id WHERE UPPER(id.region) IN (%s) GROUP BY id.dpt, id.region" % \
-                        (id_table, ", ".join(["'" + format_region_for_cp_retrieval(region, id_table) + "'" for region in self.region_list]))
-                else:
-                    q = "SELECT DISTINCT ON (id.dpt) id.region, id.dpt AS cp FROM %s AS id WHERE UPPER(id.region) LIKE ANY (ARRAY[%s]) GROUP BY id.dpt, id.region" % \
-                        (id_table, ", ".join(["'" + format_region_for_cp_retrieval(region, id_table) + "%'" for region in self.region_list]))
-            else:
-                q = "SELECT DISTINCT ON (id.dpt) id.region, id.dpt AS cp FROM %s AS id WHERE UPPER(id.region) = '%s' GROUP BY id.dpt, id.region" % \
-                    (id_table, format_region_for_cp_retrieval(self.region_list[0], id_table))
-
-            if self.debug:
-                print "--- Querying %s table to get corresponding cp ---" % str(id_table)
-                print q
-            self.region_cp_df = pd.read_sql(q, self.connection)
-            self.region_cp_df = self.region_cp_df.drop_duplicates()
-            self.region_cp_list = list(self.region_cp_df.cp.unique())
-            if self.debug:
-                #show_group_by_df(df, 'ville')
-                show_df(self.region_cp_df)
-                print "%s region --> %s records for %s distinct cp" % (str(len(self.region_list)),
-                                                                       str(len(self.region_cp_df.index)),
-                                                                       str(len(self.region_cp_list)))
-                #print cp_list
-            return (self.region_cp_list, self.region_cp_df)
-        else:
-            return False
-
-    def create_city_cp_df(self, id_table = 'postal_ville_cp', strict = True):
-        usual_city_dict = {'Paris' : ['Paris ' + digit_to_str(arrdt) for arrdt in range(1,21)],
-                       'Neuilly' : 'Neuilly sur Seine',
-                       'Boulogne' : 'Boulogne Billancourt',
-                       'Levallois' : 'Levallois Perret',
-                       'Velizy' : 'Velizy Villacoublay',
-                       'Villiers' : 'Villiers le Bel',
-                       'Reuil' : 'Reuil Malmaison'}
-        if self.city_list:
-            if not isinstance(self.city_list, list):
-                self.city_list = [self.city_list]
-            self.city_list = [usual_city_dict[city] if city in usual_city_dict.keys() else city for city in self.city_list]
-            self.city_list = flatten_list(self.city_list)
-            if len(self.city_list) > 1:
-                if strict:
-                    q = "SELECT DISTINCT ON (id.cp) id.ville, id.cp FROM %s AS id WHERE id.ville IN (%s) GROUP BY id.cp, id.ville" % \
-                        (id_table, ", ".join(["'" + format_city_for_cp_retrieval(city, id_table) + "'" for city in self.city_list]))
-                else:
-                    q = "SELECT DISTINCT ON (id.cp) id.ville, id.cp FROM %s AS id WHERE id.ville LIKE ANY (ARRAY[%s]) GROUP BY id.cp, id.ville" % \
-                        (id_table, ", ".join(["'" + format_city_for_cp_retrieval(city, id_table) + "%'" for city in self.city_list]))
-            else:
-                q = "SELECT DISTINCT ON (id.cp)id.ville, id.cp FROM %s AS id WHERE id.ville = '%s' GROUP BY id.cp, id.ville" % \
-                    (id_table, format_city_for_cp_retrieval(self.city_list[0], id_table))
-
-            if self.debug:
-                print "--- Querying %s table to get corresponding cp ---" % str(id_table)
-                print q
-            self.city_cp_df = pd.read_sql(q, self.connection)
-            self.city_cp_df = self.city_cp_df.drop_duplicates()
-            self.city_cp_list = list(self.city_cp_df.cp.unique())
-            if self.debug:
-                #show_group_by_df(df, 'ville')
-                show_df(self.city_cp_df)
-                print "%s cities --> %s records for %s distinct cp" % (str(len(self.city_list)),
-                                                                       str(len(self.city_cp_df.index)), str(len(self.city_cp_list)))
-                #print cp_list
-                if len(self.city_cp_list) == 0: return False
-            return (self.city_cp_list, self.city_cp_df)
-        else:
-            return False
-    
-    def create_cp_fix_df(self):
-        # when cp_precision in [3, 4], creates a df to mask existing cp with queried cp
-        #print self.cp_sql_dict
+            threads = [ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item),
+                                    target = sms_query_count_single_geo_item,
+                                    args = (geo_criteria, geo_item, cp_precision, age_min, age_max, civi))
+                       for geo_item in geo_list]
+        for t in threads:
+            t.start()
         data = []
-        two_digit = lambda x: '0' + str(x) if len(str(x)) == 1 else str(x)
-        for n_cp, cp_list in self.cp_sql_dict.iteritems():
-            for cp in cp_list:
-                cp_num = cp[1:-2]
-                for cp_param in self.cp_list:
-                    if cp_num == cp_param[:n_cp]:
-                        cp_show = str(cp_param)
-                    else:
-                        cp_show = str(cp_num) + ('0' * (5 - n_cp))
-                if n_cp == 4:
-                    for cpt in range(10):
-                        data.append([str(cp_show), str(cp_num) + str(cpt)])
-                elif n_cp == 3:
-                    for cpt in range(100):
-                        data.append([str(cp_show), str(cp_num) + two_digit(cpt)])
-        self.cp_fix_df = pd.DataFrame(data = data, columns = ['cp_show', 'cp'])
-        show_df(self.cp_fix_df)
-        return self.cp_fix_df
+        for t in threads:
+            t_res = t.join()
+            if t_res:
+                data.append(t_res)
+        result = pd.DataFrame(data = data, columns = ['entity', 'name', 'nb_sms'])
+        if self.interest_list:
+            if not isinstance(self.interest_list, list): self.interest_list = [self.interest_list]
+            for interest_id in self.interest_list:
+                result = adjust_for_interest(result, interest_id, amplitude = 0, col_to_adjust = 'nb_sms', base = 1.2)
+        if self.proxi_list:
+            if not isinstance(self.proxi_list, list): self.proxi_list = [self.proxi_list]
+            for proxi in proxi_list:
+                result = adjust_for_proxi(result, proxi = proxi, amplitude = 0, col_to_adjust = 'nb_sms', base = 1.2)
+        show_df(result)
+        json_result = {}
+        json_result['columns'] = list(result)
+        json_result['values'] = result.values.tolist()
+        self.df_result = json.dumps(json_result)
+        self.store_in_db()
+        # return self.id <-- need to return self.id in the webservice's JSON
+        return result
 
-    def create_geo_fix_df(self):
-        # geo_fix_df purpose is to transform whatever the query returns into what the user asked for in the first place
-        # checks if cp_fix_df was created in prior steps (ie. if cp_precision = 3 or = 4)
-        if self.cp_fix:
-            # in this case, other masking df need to be merged with cp_fix_df
-            if self.city_list:
-                # 'cp_show' column is replaced by 'ville' column
-                self.geo_fix = True
-                self.geo_fix_df = pd.merge(self.cp_fix_df,
-                                          self.city_cp_df.rename(columns = {'cp' : 'cp_show'}))
-            elif self.region_list:
-                pass
-            else:
-                self.geo_fix = True
-                self.geo_fix_df = self.cp_fix_df.copy(deep = True)
+    def select_multi(self, query_id = None, global_limit = None, select_field = ['sms','age','gender','cp'], hlr_lookup = True,
+                     geo_dict_with_limit = None, geo_dict = None, geo_criteria = None, geo_list = None, cp_precision = 5,
+                     age_min = None, age_max = None, civi = None, interest_list = None, proxi_list = None,
+                     user = None, client_id = None, client_name = None):
+        # Loads parameters
+        if global_limit: self.global_limit = int(global_limit)
+        if geo_dict_with_limit: self.geo_dict_with_limit = geo_dict_with_limit
+
+        # Priority given to query_id, in which case the parameters are retrieved from the DB
+        if query_id:
+            self.id = query_id
+            self.retrieve_data_from_id()
         else:
-            # this case corresponds cp_precision = 2 ('dpt' case) or = 5 ('plain' five-digit cp)
-            if self.city_list:
-                # in this case, we need to transform cp into cities
-                self.geo_fix = True
-                self.geo_fix_df = self.city_cp_df.copy(deep = True)
-                if self.cp_precision == 2:
-                    # in this case, the query returns the first two-digit of the users' cp,
-                    # so we need to adapt geo_fix_df by creating a dpt column
-                    self.geo_fix_df['dpt'] = self.geo_fix_df['cp'].apply(lambda x: str(x)[:2])
-                    # we can drop the 'cp' column as it becomes uselss (given that when cp_precision = 2 only dpt are returned)
-                    self.geo_fix_df.drop('cp', axis = 1, inplace = True)
-                else:
-                    # in this case cp_precision = 5, so no need for extra modifications
-                    pass
-            elif self.region_list:
-                pass
-            else:
-                # no need to mask anything in this case
-                pass
+            if interest_list: self.interest_list = interest_list
+            if proxi_list: self.proxi_list = proxi_list
+            if geo_dict: self.geo_dict = geo_dict
+            if geo_criteria: self.geo_criteria = geo_criteria
+            if geo_list: self.geo_list = geo_list
+            if cp_precision: self.cp_precision = cp_precision
+            if age_min: self.age_min = age_min
+            if age_max: self.age_max = age_max
+            if civi: self.civi = civi
 
-    def get_df(self):
-        self.create_query()
-        self.get_connection()
-        if self.debug:
-            print "--- Resulting SQL query ---"
-            self.print_query()
-            print "--- Querying the DB (this may take up to a minute) ---"
-        self.df = pd.read_sql(self.query, self.connection)
-        self.create_geo_fix_df()
-        if self.geo_fix:
-            if 'cp' in list(self.df):
-                if self.debug:
-                    show_df(self.df)
-                    print "--- Masking geo results ---"
-                self.df = pd.merge(self.df, self.geo_fix_df, on = 'cp')
-                if self.cp_fix:
-                    if self.debug: print "--- Removing 'cp_show' column ---"
-                    self.df.drop('cp', axis = 1, inplace = True)
-                    self.df.rename(columns = {'cp_show' : 'cp'}, inplace = True)
-        if self.debug: show_df(self.df)
+        self.retrieve_client(client_id, client_name)
+        self.create_query_name(user, client_id, client_name)
+
+        # Gets the selection with threading on each geo parameter
+        threads = []
+        # Case with limits given for each geo point
+        if self.geo_dict_with_limit:
+            for geo_criteria, geo_list_with_limit in self.geo_dict_with_limit.iteritems():
+                # Checks that geo_list_with_limit truly has limits specified
+                # In the case that it is a list (ie. no limits specified) : rebuilds a dict with all limits set to None
+                if isinstance(geo_list_with_limit, list):
+                    replacement_dict = {}
+                    for geo_list in geo_list_with_limit:
+                        replacement_dict[geo_list] = None
+                    geo_list_with_limit = replacement_dict
+                for geo_item, limit_item in geo_list_with_limit.iteritems():
+                    t = ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item) + "_" + (str(limit_item) if limit_item else "no-limit"),
+                                     target = sms_query_select_sample_geo_item,
+                                     args = (limit_item, geo_criteria, geo_item, 5, age_min, age_max, civi, select_field))
+                    threads.append(t)
+        # Case with no limit given for any geo pint (either a geo_dict, or a single (geo_criteria, geo_list) couple
+        # This would be typically the case of a SMSQuery() being called by its query_id, with a global_limit given by the client
+        elif self.geo_dict:
+            for geo_criteria, geo_list in self.geo_dict.iteritems():
+                for geo_item in geo_list:
+                    t = ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item) + "_" + str("no-limit"),
+                                     target = sms_query_select_sample_geo_item,
+                                     args = (None, geo_criteria, geo_item, 5, age_min, age_max, civi, select_field))
+                    threads.append(t)
+        else:
+            threads = [ThreadReturn(name = str(geo_criteria) + "_" + str(geo_item) + "_" + str("no-limit"),
+                                     target = sms_query_select_sample_geo_item,
+                                     args = (None, geo_criteria, geo_item, 5, age_min, age_max, civi, select_field))
+                       for geo_item in geo_list]
+        # Running the treads
+        for t in threads:
+            t.start()
+        data = []
+        for t in threads:
+            t_res = t.join()
+            if t_res[0]:
+                df = t_res[1]
+                df['source'] = str(t.name)
+                data.append(df)
+        result = pd.concat(data)
+        print "### This is the result of appending all threads ###"
+        show_df(result)
+        print "### Raw selection is %s contacts ###" % str(len(result.index))
+        if global_limit:
+            global_limit = enlarge_sample(global_limit)
+            result = sample_or_same(result, global_limit)
+        self.df = result
+        print "### This is the result of applying global limit ###"
+        show_df(result)
+        print "### Global limit selection is %s contacts ###" % str(len(result.index))
+        if hlr_lookup:
+            self.hlr_cleanup()
+
+        try:
+            self.store_campaign_in_db()
+            self.store_sms_list_in_db()
+        except:
+            e = sys.exc_info()
+            message = ""
+            for item in e:
+                message = message + " *** " + str(item)
+            print "### Unable to store the campaign in DB ###"
+
+        if self.upload_to_router(list_name = self.query_name):
+            try:
+                self.update_campaign_in_db()
+            except:
+                e = sys.exc_info()
+                message = ""
+                for item in e:
+                    message = message + " *** " + str(item)
+                print "### Unable to update the campaign in DB ###"
+
+        self.get_campaign_summary()
         return self.df
+
 
     def hlr_cleanup(self, batch_name = None, write_to_file = False, folder = None, file = None,
                     write_to_db = True, connection = None):
@@ -1674,7 +1699,7 @@ class SMSQuery(object):
             print "## HLR Lookup completed : below is the new self.df within SMSQuery() object ##"
             show_df(self.df)
 
-    def store_campaign_in_db(self, associate_campaign = False):
+    def store_campaign_in_db(self, associate_campaign = True):
         if not self.connection: self.get_connection()
         if not self.id: self.store_in_db()
         sum_dict_limit = 0
@@ -1701,12 +1726,16 @@ class SMSQuery(object):
         except:
             volume_sent = 0
         if volume_sent > 0:
-            volume_sent = str(volume_sent)
+            try:
+                billing_price = round(float(volume_sent/1000) * self.client.acq_cpm_price, 2)
+            except:
+                billing_price = None
         else:
             volume_sent = None
+            billing_price = None
 
         args = [str(self.client_id), d.datetime.now().replace(microsecond=0).isoformat(), str(self.id),
-                self.query_name, self.user_name, volume_client, volume_sent]
+                self.query_name, self.user_name, volume_client, volume_sent, billing_price]
         q = Query(self.cursor, self.connection, self.query_dict, 'insert_campaign', args, True)
         self.campaign_id = unpack(q.execute())
         if associate_campaign:
@@ -1775,10 +1804,12 @@ class SMSQuery(object):
             res = unpack(q.execute())
             if res:
                 self.user_name, self.create_date, self.client_id, self.geo_dict, self.geo_criteria, self.geo_list, self.age_min,\
-                self.age_max, self.civi, self.interest_list, self.proxi_list, self.df_result, self.query_name = res
+                self.age_max, self.civi, self.interest_list, self.proxi_list, self.df_result, self.query_name, self.global_limit,\
+                self.geo_dict_with_limit = res
 
                 if self.geo_dict: self.geo_dict = eval(self.geo_dict)
                 if self.geo_list: self.geo_list = eval(self.geo_list)
+                if self.geo_dict_with_limit: self.geo_dict_with_limit = eval(self.geo_dict_with_limit)
 
     def retrieve_client(self, client_id = None, client_name = None):
         if not self.client_associated:
@@ -1818,9 +1849,26 @@ class SMSQuery(object):
         if not self.connection: self.get_connection()
         args = [str(self.user_name), d.datetime.now().replace(microsecond=0).isoformat(), str(self.client_id), str(self.geo_dict),
                 str(self.geo_criteria), str(self.geo_list), str(self.age_min), str(self.age_max), str(self.civi),
-                str(self.interest_list), str(self.proxi_list), str(self.df_result), str(self.query_name)]
+                str(self.interest_list), str(self.proxi_list), str(self.df_result), str(self.query_name), str(self.global_limit),
+                str(self.geo_dict_with_limit)]
         q = Query(self.cursor, self.connection, self.query_dict, 'insert_query', args, True)
         self.id = unpack(q.execute())
+
+    def get_campaign_summary(self):
+        self.campaign_summary = {}
+        for param in ['age_min', 'age_max', 'civi', 'geo_dict', 'geo_dict_with_limit', 'interest_list', 'proxi_list',
+                      'id', 'global_limit', 'geo_dict_with_limit']:
+            self.campaign_summary[param] = self.__getattribute__(param)
+        self.campaign_summary['query_id'] = self.campaign_summary.pop('id')
+        if self.campaign:
+            for param in ['volume_client', 'billing_price']:
+                self.campaign_summary[param] = self.campaign.__getattribute__(param)
+        self.campaign_summary['nb_sms_sent'] = self.campaign_summary.pop('volume_client')
+        if self.client:
+            for param in ['name', 'acq_cpm_price']:
+                self.campaign_summary[param] = self.client.__getattribute__(param)
+        self.campaign_summary['client_name'] = self.campaign_summary.pop('name')
+        return self.campaign_summary
 
     def get_related_campaign_id_in_db(self):
         if not self.connection: self.get_connection()
@@ -1842,7 +1890,10 @@ class SMSQuery(object):
             self.close_connection = True
 
     def __del__(self):
-        if self.close_connection: self.connection.close()
+        if self.close_connection:
+            if self.debug:
+                print "### Connection closed with __del__() method of SMSQuery() object ###"
+            self.connection.close()
 
     def hlr_old_function(self, batch_name = 'test', write_to_file = False, folder = None, file = None,
               write_to_db = True, connection = None, debug = True):
@@ -1882,11 +1933,11 @@ class SMSCampaign(object):
     list_id_default_dict = {'primotexto' : '5a61d9f07076b97ff6360ae3'}
     query_dict = {'select_campaign' : "SELECT * FROM sms_api_campaign WHERE id = %s",
                   'update_campaign' : "UPDATE sms_api_campaign SET sender = %s, message = %s, send_date = %s, " + \
-                                      "bat_list = %s, router_list_id = %s, router = %s, router_campaign_id = %s " + \
-                                      "WHERE id = %s",
+                                      "bat_list = %s, router_list_id = %s, router = %s, router_campaign_id = %s, " + \
+                                      "url = %s WHERE id = %s",
                   'insert_campaign' : "INSERT INTO sms_api_campaign (sender, message, send_date, " + \
-                                      "bat_list, router_list_id, router, router_campaign_id, create_date) VALUES " + \
-                                      "(%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                                      "bat_list, router_list_id, router, router_campaign_id, url, create_date) VALUES " + \
+                                      "(%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                   'insert_bat' : "INSERT INTO sms_api_bat_sent (campaign_id, sms, sent_date) VALUES (%s, %s, %s)",
                   'update_bat_status' : "UPDATE sms_api_campaign SET bat_sent = TRUE WHERE id = %s"}
 
@@ -1915,6 +1966,8 @@ class SMSCampaign(object):
         self.user_name = None
         self.router_list_id = None
         self.router_campaign_id = None
+        self.billing_price = None
+        self.campaign_summary = None
         self.id = None
         if id: self.id = id
         self.retrieve_data_from_db(get_parents = True)
@@ -1954,7 +2007,6 @@ class SMSCampaign(object):
             self.update_data_in_db()
         if self.bat_list: self.send_bat()
 
-
     def send_bat(self, bat_list = None, campaign_id = None):
         if bat_list: self.bat_list = bat_list
         if self.bat_list: self.bat_list = convert_list_to_international_format(self.bat_list)
@@ -1983,8 +2035,8 @@ class SMSCampaign(object):
 
     def update_data_in_db(self):
         if not self.connection: self.get_connection()
-        args = [self.sender,self.message,self.send_date,self.bat_list,self.router_list_id ,self.router,self.router_campaign_id,
-                self.id]
+        args = [self.sender,self.message,self.send_date,self.bat_list,self.router_list_id, self.router,
+                self.router_campaign_id, self.url, self.id]
         args = [str(x) for x in args]
         if self.id:
             q = Query(self.cursor, self.connection, self.query_dict, 'update_campaign', args, False)
@@ -1994,7 +2046,6 @@ class SMSCampaign(object):
             args.append(d.datetime.now().replace(microsecond=0).isoformat())
             q = Query(self.cursor, self.connection, self.query_dict, 'insert_campaign', args, True)
             self.id = unpack(q.execute())
-
 
     def create_campaign_name(self):
         self.date = d.datetime.now().date().isoformat()
@@ -2006,8 +2057,7 @@ class SMSCampaign(object):
                 self.client_name = "client?"
         if not self.sender: self.sender = "sender?"
         simplify_sender = self.sender.replace(" ", "-").lower()
-        self.campaign_name = "_".join(self.user_name, self.client_name, simplify_sender, self.date)
-
+        self.campaign_name = "_".join([self.user_name, self.client_name, simplify_sender, self.date])
 
     def retrieve_data_from_db(self, get_parents = True):
         if not self.connection: self.get_connection()
@@ -2017,15 +2067,73 @@ class SMSCampaign(object):
             if res:
                 id, self.client_id, self.query_id, self.campaign_name, self.message, self.sender, self.url, self.router, \
                 self.create_date, self.bat_list, self.bat_sent, self.extra_recipients, self.volume_sent, self.volume_client, \
-                self.user_name, self.router_list_id, self.router_campaign_id, self.send_date = res
+                self.user_name, self.router_list_id, self.router_campaign_id, self.send_date, self.billing_price = res
                 if get_parents:
                     if self.query_id:
                         q = SMSQuery(id = self.query_id)
                         self.query = q
+                    if self.client_id:
+                        c = SMSClient()
+                        c.get(id = self.client_id)
+                        self.client = c
+
+    def get_campaign_summary(self):
+        self.campaign_summary = {}
+        if self.query:
+            for param in ['age_min', 'age_max', 'civi', 'geo_dict', 'geo_dict_with_limit', 'interest_list', 'proxi_list',
+                          'id', 'global_limit', 'geo_dict_with_limit']:
+                self.campaign_summary[param] = self.query.__getattribute__(param)
+            self.campaign_summary['query_id'] = self.campaign_summary.pop('id')
+
+            if self.query.client:
+                for param in ['name', 'acq_cpm_price']:
+                    self.campaign_summary[param] = self.query.client.__getattribute__(param)
+            self.campaign_summary['client_name'] = self.campaign_summary.pop('name')
+
+        for param in ['volume_client', 'sender', 'message', 'bat_list', 'extra_recipients', 'send_date', 'url',
+                      'campaign_name', 'billing_price']:
+            self.campaign_summary[param] = self.__getattribute__(param)
+        self.campaign_summary['nb_sms_sent'] = self.campaign_summary.pop('volume_client')
+        return self.campaign_summary
 
     def get_connection(self):
         if not self.connection:
             if self.debug: print "--- Establishing connection with DB ---"
+            self.connection = pg.get_connection()
+            self.cursor = self.connection.cursor()
+            self.close_connection = True
+
+    def __del__(self):
+        if self.close_connection: self.connection.close()
+
+
+class SMSCampList(object):
+    query_dict = {'select_campaign' : "SELECT %s FROM sms_api_campaign AS c JOIN sms_api_query AS q ON q.id = c.query_id " + \
+                                      "WHERE c.client_id = %s ORDER BY c.id DESC"}
+
+    default_param = ['id', 'campaign_name', 'sender', 'volume_client', 'billing_price', 'message', 'send_date', 'bat_sent',
+                     'age_min', 'age_max', 'interest_list', 'global_limit', 'geo_dict_with_limit']
+
+    def __init__(self, client_id = 1, param_list = None, limit = 10):
+        self.connection = None
+        self.cursor = None
+        self.close_connection = False
+        if not self.connection: self.get_connection()
+        if not param_list: param_list = self.default_param
+        sql_param_list = []
+        for param in param_list:
+            if param in ['age_min', 'age_max', 'interest_list', 'global_limit', 'geo_dict_with_limit']:
+                sql_param_list.append("q." + param)
+            else:
+                sql_param_list.append("c." + param)
+        what_string = ", ".join(sql_param_list)
+        query = self.query_dict['select_campaign'] % (what_string, str(client_id))
+        if limit: query = query + " LIMIT %s" % str(limit)
+        df = pd.read_sql(query, self.connection)
+        show_df(df)
+
+    def get_connection(self):
+        if not self.connection:
             self.connection = pg.get_connection()
             self.cursor = self.connection.cursor()
             self.close_connection = True
