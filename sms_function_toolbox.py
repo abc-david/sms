@@ -334,7 +334,7 @@ def convert_arg(arg, arg_type = None):
 def adjust_for_proxi(df, proxi = None, amplitude = 0, col_to_adjust = 'nb_sms', base = 1.2):
     if proxi:
         random_factor = 1
-        if amplitude != 0: random_factor = adjust_for_pri((1 - amplitude), (1 + amplitude))
+        if amplitude != 0: random_factor = random.uniform((1 - amplitude), (1 + amplitude))
         multi_factor = (base + (int(proxi) / 100)) * random_factor
         print "Multiply by %s for +%skm" % (str(multi_factor), str(proxi))
         try:
